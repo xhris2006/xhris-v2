@@ -366,19 +366,40 @@ gmd(
     }
 
     try {
-      const apiUrl = `${PrinceTechApi}/api/search/lyricsv2?apikey=${PrinceApiKey}&query=${encodeURIComponent(q)}`;
-      const res = await axios.get(apiUrl, { timeout: 60000 });
+      const lyricsEndpoints = [
+        `${PrinceTechApi}/api/search/lyricsv2?apikey=${PrinceApiKey}&query=${encodeURIComponent(q)}`,
+        `${PrinceTechApi}/api/search/lyrics?apikey=${PrinceApiKey}&query=${encodeURIComponent(q)}`,
+        `https://api.giftedtech.web.id/api/search/lyrics?apikey=gifted&query=${encodeURIComponent(q)}`,
+      ];
 
-      if (!res.data?.success || !res.data?.result) {
-        await react("❌");
-        return reply("No lyrics found. Please try a different song.");
+      let artist, title, lyrics;
+
+      for (const url of lyricsEndpoints) {
+        try {
+          const res = await axios.get(url, { timeout: 30000 });
+          const data = res.data;
+          if (data?.success && data?.result) {
+            artist = data.result.artist;
+            title = data.result.title;
+            lyrics = data.result.lyrics;
+            if (lyrics) break;
+          } else if (data?.result?.lyrics) {
+            artist = data.result.artist || 'Unknown';
+            title = data.result.title || q;
+            lyrics = data.result.lyrics;
+            if (lyrics) break;
+          }
+        } catch (e) { continue; }
       }
 
-      const { artist, title, lyrics } = res.data.result;
+      if (!lyrics) {
+        await react("❌");
+        return reply("Aucune parole trouvée. Essaie un autre titre ou avec l'artiste.");
+      }
 
-      let txt = `*${botName} 𝐋𝐘𝐑𝐈𝐂𝐒*\n\n`;
-      txt += `🎤 *Artist:* ${artist || "Unknown"}\n`;
-      txt += `🎵 *Title:* ${title || "Unknown"}\n\n`;
+      let txt = `*${botName} — PAROLES*\n\n`;
+      txt += `🎤 *Artiste :* ${artist || "Inconnu"}\n`;
+      txt += `🎵 *Titre :* ${title || q}\n\n`;
       txt += `${lyrics}\n\n`;
       txt += `> *${botFooter}*`;
 

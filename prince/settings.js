@@ -1045,3 +1045,35 @@ gmd(
     }
   },
 );
+
+
+gmd({
+  pattern: "setprefix",
+  aliases: ["changeprefix", "prefix"],
+  react: "⚙️",
+  category: "owner",
+  description: "Change le préfixe des commandes (utiliser 'null' pour aucun préfixe)",
+}, async (from, Prince, conText) => {
+  const { q, reply, react, isSuperUser } = conText;
+
+  if (!isSuperUser) return reply("❌ Owner Only Command!");
+  if (!q) return reply("❌ Donne un préfixe !\nExemples :\n• .setprefix !\n• .setprefix #\n• .setprefix null (aucun préfixe)");
+
+  let newPrefix = q.trim();
+
+  if (newPrefix.toLowerCase() === 'null' || newPrefix.toLowerCase() === 'none' || newPrefix.toLowerCase() === 'aucun') {
+    newPrefix = '';
+  } else if (newPrefix.length > 3) {
+    return reply("❌ Le préfixe doit faire 1-3 caractères max.");
+  }
+
+  try {
+    setSetting('PREFIX', newPrefix);
+    try { const config = require('../config'); config.PREFIX = newPrefix; } catch (e) {}
+    await react("✅");
+    await reply(`✅ Préfixe changé !\n\nNouveau préfixe : ${newPrefix || '(aucun)'}\n\n${newPrefix ? `Exemple : ${newPrefix}menu` : 'Tape menu directement.'}`);
+  } catch (e) {
+    await react("❌");
+    return reply(`❌ Erreur: ${e.message}`);
+  }
+});

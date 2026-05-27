@@ -153,16 +153,31 @@ gmd({
       if (apiResult.success && apiResult.data) {
         downloadUrl = apiResult.data.result?.download_url
                    || apiResult.data.result?.url
+                   || apiResult.data.result?.audio
+                   || apiResult.data.result?.media
                    || apiResult.data.download_url
                    || apiResult.data.url
                    || apiResult.data.audio
-                   || apiResult.data.result?.audio;
-
+                   || apiResult.data.media
+                   || apiResult.data.dl_url
+                   || apiResult.data.downloadUrl
+                   || apiResult.data.data?.url
+                   || apiResult.data.data?.download_url;
         if (downloadUrl) {
-          console.log(`[YTMP3] Source: ${apiResult.providerName}`);
+          console.log(`[YTMP3] ✅ Source: ${apiResult.providerName}`);
         }
       }
-      
+      // Essai 2 : fallback dreaded.site si tout échoue
+      if (!downloadUrl) {
+        try {
+          const fallbackRes = await gmdJson(`https://api.dreaded.site/api/youtube/mp3?url=${encodeURIComponent(videoUrl)}`);
+          downloadUrl = fallbackRes?.result?.download?.url
+                     || fallbackRes?.result?.url
+                     || fallbackRes?.url;
+          if (downloadUrl) console.log(`[YTMP3] ✅ Fallback dreaded.site OK`);
+        } catch (e) { console.log('[YTMP3] dreaded fallback failed:', e.message); }
+      }
+
       if (!downloadUrl) {
         await react("❌");
         return reply("Failed to get download URL for the audio.");
@@ -304,16 +319,31 @@ gmd({
       if (apiResult.success && apiResult.data) {
         downloadUrl = apiResult.data.result?.download_url
                    || apiResult.data.result?.url
+                   || apiResult.data.result?.video
+                   || apiResult.data.result?.media
                    || apiResult.data.download_url
                    || apiResult.data.url
                    || apiResult.data.video
-                   || apiResult.data.result?.video;
-
+                   || apiResult.data.media
+                   || apiResult.data.dl_url
+                   || apiResult.data.downloadUrl
+                   || apiResult.data.data?.url
+                   || apiResult.data.data?.download_url;
         if (downloadUrl) {
-          console.log(`[YTMP4] Source: ${apiResult.providerName}`);
+          console.log(`[YTMP4] ✅ Source: ${apiResult.providerName}`);
         }
       }
-      
+      // Essai 2 : fallback dreaded.site si tout échoue
+      if (!downloadUrl) {
+        try {
+          const fallbackRes = await gmdJson(`https://api.dreaded.site/api/youtube/mp4?url=${encodeURIComponent(videoUrl)}`);
+          downloadUrl = fallbackRes?.result?.download?.url
+                     || fallbackRes?.result?.url
+                     || fallbackRes?.url;
+          if (downloadUrl) console.log(`[YTMP4] ✅ Fallback dreaded.site OK`);
+        } catch (e) { console.log('[YTMP4] dreaded fallback failed:', e.message); }
+      }
+
       if (!downloadUrl) {
         await react("❌");
         return reply("Failed to get download URL for the video.");

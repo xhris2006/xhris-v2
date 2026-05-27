@@ -50,6 +50,8 @@ gmd({
 }, async (from, Prince, conText) => {
     const { q, mek, reply, react, quoted } = conText;
 
+    await react("⏳");
+
     try {
         if (!quoted) {
             await react("❌");
@@ -87,7 +89,7 @@ gmd({
                 }
 
                 const stickerBuffer = await createStickerWithCheck(mediaFile, {
-                    pack: "ᴘʀɪɴᴄᴇ ᴛᴇᴄʜ",
+                    pack: "𝐗𝐇𝐑𝐈𝐒 𝐌𝐃 𝐕𝟐",
                     author: "❤️",
                     type: q.includes("--crop") || q.includes("-c") ? StickerTypes.CROPPED : StickerTypes.FULL,
                     categories: ["🤩", "🎉"],
@@ -108,7 +110,7 @@ gmd({
                 await fs.writeFile(stickerFile, stickerData);
 
                 const newStickerBuffer = await createStickerWithCheck(stickerFile, {
-                    pack: "ᴘʀɪɴᴄᴇ ᴛᴇᴄʜ",
+                    pack: "𝐗𝐇𝐑𝐈𝐒 𝐌𝐃 𝐕𝟐",
                     author: "❤️",
                     type: q.includes("--crop") || q.includes("-c") ? StickerTypes.CROPPED : StickerTypes.FULL,
                     categories: ["🤩", "🎉"],

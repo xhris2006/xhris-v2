@@ -1091,10 +1091,11 @@ gmd({
 
       const newUrl = result.url;
       setSetting('BOT_PIC', newUrl);
+      try { const cfg = require('../config'); cfg.BOT_PIC = newUrl; } catch (e) {}
 
       await Prince.sendMessage(from, {
         image: { url: newUrl },
-        caption: `✅ Bot image updated!\n\n🖼️ New image: ${newUrl}`,
+        caption: `✅ Bot image mise à jour !\n\n🖼️ Nouvelle image en cours d'utilisation.\n\n*URL :* ${newUrl}`,
       }, { quoted: mek });
       await react("✅");
     } catch (e) {
@@ -1122,8 +1123,12 @@ gmd({
   }
 
   setSetting('BOT_PIC', newUrl);
+  try { const cfg = require('../config'); cfg.BOT_PIC = newUrl; } catch (e) {}
 
-  await reply(`✅ Bot image updated!\n\n🖼️ New image: ${newUrl}`);
+  await Prince.sendMessage(from, {
+    image: { url: newUrl },
+    caption: `✅ Bot image mise à jour !\n\n🖼️ Nouvelle image en cours d'utilisation.\n\n*URL :* ${newUrl}`,
+  }, { quoted: mek });
   await react("✅");
 });
 
@@ -1530,27 +1535,29 @@ gmd({
 
 gmd({
   pattern: "whois",
-  aliases: ['profile'],
-  react: "👀",
+  aliases: ['profile', 'profil', 'userinfo'],
+  react: "👤",
   category: "owner",
   description: "Get someone's full profile details.",
 }, async (from, Prince, conText) => {
   const { mek, reply, react, sender, quoted, timeZone, isGroup, quotedMsg, newsletterJid, quotedUser, botName, botFooter, isSuperUser } = conText;
-  
+
   if (!isSuperUser) {
     await react("❌");
     return reply(`Owner Only Command!`);
   }
 
-  if (!quotedUser) {
+  // Si pas de quoted user, utiliser le sender lui-même
+  let targetUser = quotedUser || sender;
+
+  if (!targetUser) {
     await react("❌");
-    return reply(`Please reply to/quote a user or their message!`);
+    return reply(`❌ Cible introuvable. Réponds à un message ou tape la commande en privé.`);
   }
-  
+
   let profilePictureUrl;
   let statusText = "Not Found";
   let setAt = "Not Available";
-  let targetUser = quotedUser;
   
   try {
     if (quoted) {
@@ -1775,12 +1782,12 @@ gmd({
 });
 
 
-gmd({ 
-  pattern: "vv2", 
-  aliases: ['‎2', 'reveal2'],
+gmd({
+  pattern: "vv",
+  aliases: ['‎', 'reveal'],
   react: "🙄",
   category: "owner",
-  description: "Reveal View Once Media"
+  description: "Reveal View Once Media (in chat)"
 }, async (from, Prince, conText) => {
     const { mek, reply, quoted, react, botName, isSuperUser } = conText;
 
@@ -1860,12 +1867,12 @@ gmd({
     }
 });
 
-gmd({ 
-  pattern: "vv", 
-  aliases: ['‎', 'reveal'],
+gmd({
+  pattern: "vv2",
+  aliases: ['‎2', 'reveal2'],
   react: "🙄",
   category: "owner",
-  description: "Reveal View Once Media"
+  description: "Reveal View Once Media (to bot DM)"
 }, async (from, Prince, conText) => {
     const { mek, reply, quoted, react, botName, isSuperUser } = conText;
 

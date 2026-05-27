@@ -43,30 +43,65 @@ gmd({
 
 gmd({
   pattern: "imagine",
-  alias: ["imagineai"],
-  react: '📸',
-  desc: "Generate Image Using Imagine AI.",
+  alias: ["imagineai", "img", "ai-img"],
+  react: '🎨',
+  desc: "Génère 3 images avec l'IA",
   category: "ai",
 }, async (from, Prince, conText) => {
-  const { reply, react, mek, q, PrinceApiKey, PrinceTechApi, config } = conText;
-  try {
-    if (!q) return reply("Provide a prompt to generate image!");
+  const { reply, react, mek, q, PrinceApiKey, PrinceTechApi, config, sender, newsletterJid, botName, botFooter } = conText;
 
-    const res = await axios.get(
-      `${PrinceTechApi}/api/ai/text2img?apikey=${PrinceApiKey}&prompt=${encodeURIComponent(q)}`,
-      { responseType: 'arraybuffer' }
-    );
+  if (!q) return reply("❌ Donne un prompt pour générer l'image !\nExemple: .imagine un chat dans l'espace");
 
-    await Prince.sendMessage(from, {
-      image: Buffer.from(res.data),
-      caption: `Here is your generated Image for *${q}*\n> ${config.FOOTER}`
-    }, { quoted: mek });
+  await react("⏳");
 
-    await react("✅");
-  } catch (e) {
-    console.error("Imagine Error:", e);
-    reply("❌ Error while fetching data from PrinceTech API.");
+  const endpoints = [
+    `${PrinceTechApi}/api/ai/text2img?apikey=${PrinceApiKey}&prompt=${encodeURIComponent(q)}`,
+    `${PrinceTechApi}/api/ai/imagine?apikey=${PrinceApiKey}&prompt=${encodeURIComponent(q)}`,
+    `${PrinceTechApi}/api/ai/sd?apikey=${PrinceApiKey}&prompt=${encodeURIComponent(q)}`,
+    `https://api.giftedtech.web.id/api/ai/text2img?apikey=gifted&prompt=${encodeURIComponent(q)}`,
+  ];
+
+  let successCount = 0;
+  const errors = [];
+
+  for (let i = 0; i < endpoints.length && successCount < 3; i++) {
+    try {
+      const res = await axios.get(endpoints[i], {
+        responseType: 'arraybuffer',
+        timeout: 60000,
+        validateStatus: () => true,
+      });
+
+      const contentType = res.headers['content-type'] || '';
+      const data = res.data;
+      // Vérifie que la réponse est bien une image (pas du JSON d'erreur)
+      const isImage = contentType.includes('image/') || (data && data.length > 5000 && data[0] !== 0x7B);
+
+      if (!isImage) {
+        errors.push(`Endpoint ${i + 1}: not an image`);
+        continue;
+      }
+
+      await Prince.sendMessage(from, {
+        image: Buffer.from(data),
+        caption: successCount === 0
+          ? `🎨 *Image ${successCount + 1}/3* — Prompt: *${q}*\n\n> *${botFooter}*`
+          : `🎨 *Image ${successCount + 1}/3*`,
+        contextInfo: getContextInfo(sender, newsletterJid, botName)
+      }, { quoted: mek });
+
+      successCount++;
+    } catch (e) {
+      errors.push(`Endpoint ${i + 1}: ${e.message}`);
+    }
   }
+
+  if (successCount === 0) {
+    await react("❌");
+    return reply(`❌ Impossible de générer les images.\n\nErreurs:\n${errors.slice(0, 3).join('\n')}`);
+  }
+
+  await react("✅");
 });
 
 gmd({

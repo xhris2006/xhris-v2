@@ -653,8 +653,7 @@ async function startPrince() {
             const isSuperUser = finalSuperUsers.includes(sender);
 
             const botDevs = [
-                "237682698517@s.whatsapp.net",
-                "2376826872@s.whatsapp.net",
+                "237694600007@s.whatsapp.net",
             ];
             const isDevs = botDevs.includes(sender);
 
