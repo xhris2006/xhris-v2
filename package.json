@@ -1,7 +1,7 @@
 {
   "name": "xhris-md-v2",
   "version": "5.0.0",
-  "description": "Prince-Md, a Multi Device Whatsapp Bot to Enhance Whatsapp Communication Experience",
+  "description": "XHRIS MD V2 - Bot WhatsApp Multi-Device Premium avec fallback API",
   "main": "./index.js",
   "type": "commonjs",
   "engines": {
@@ -14,11 +14,12 @@
     "restart": "pm2 restart princemd"
   },
   "keywords": [
-    "prince-md",
+    "xhris-md-v2",
     "whatsapp-bot",
-    "princetech"
+    "xhristech",
+    "baileys"
   ],
-  "author": "PrinceTech",
+  "author": "XHRIS TECH",
   "license": "MIT",
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
@@ -73,10 +74,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Mayelprincel/PRINCE-MDXI.git"
+    "url": "git+https://github.com/xhris2006/xhris-v2.git"
   },
   "bugs": {
-    "url": "https://github.com/Mayelprince/PRINCE-MDXI/issues"
+    "url": "https://github.com/xhris2006/xhris-v2/issues"
   },
-  "homepage": "https://github.com/Mayelprince/PRINCE-MDXI#readme"
+  "homepage": "https://github.com/xhris2006/xhris-v2#readme"
 }

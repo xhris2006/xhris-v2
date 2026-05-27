@@ -42,7 +42,7 @@ module.exports = {
     NEWSLETTER_JID: process.env.NEWSLETTER_JID || '120363322606369079@newsletter',
     NEWSLETTER_NAME: process.env.NEWSLETTER_NAME || 'XHRIS MD',
     NEWSLETTER_URL: process.env.NEWSLETTER_URL || 'https://whatsapp.com/channel/0029Vark1I1AYlUR1G8YMX31',
-    BOT_REPO: process.env.BOT_REPO || 'Eric-Xhris/XHRIS-MD-V2',
+    BOT_REPO: process.env.BOT_REPO || 'xhris2006/xhris-v2',
     PACK_NAME: process.env.PACK_NAME || '𝐗𝐇𝐑𝐈𝐒 𝐌𝐃 𝐕𝟐',
     PACK_AUTHOR: process.env.PACK_AUTHOR || '𝐗𝐇𝐑𝐈𝐒 𝐓𝐄𝐂𝐇'
 };

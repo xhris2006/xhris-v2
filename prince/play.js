@@ -1,4 +1,5 @@
 const { gmd, getContextInfo } = require("../mayel");
+const { tryMultipleEndpoints } = require('../mayel/apiFallback');
 
 
 
@@ -143,7 +144,6 @@ gmd({
       const firstVideo = searchResponse.videos[0];
       const videoUrl = firstVideo.url;
       
-      const { tryMultipleEndpoints } = require('../mayel/apiFallback');
       const apiResult = await tryMultipleEndpoints(
         ['download/ytmp3', 'download/yta', 'download/dlmp3', 'download/mp3', 'download/ytaudio', 'download/ytmusic'],
         { url: videoUrl }
