@@ -1,0 +1,27 @@
+{
+  "name": "XHRIS-MD-V2",
+  "description": "XHRIS MD V2 - Bot WhatsApp Multi-Device Premium",
+  "logo": "https://xhrishost.site/icon-512.png",
+  "keywords": ["whatsapp", "bot", "xhris-md", "baileys", "multi-device", "xhris-host"],
+  "repository": "https://github.com/Eric-Xhris/EXHRIS-MD-V2",
+  "stack": "heroku-22",
+  "buildpacks": [
+    { "url": "heroku/nodejs" }
+  ],
+  "formation": {
+    "worker": { "quantity": 1, "size": "eco" }
+  },
+  "env": {
+    "SESSION_ID": {
+      "description": "Votre session WhatsApp (XHRIS-MD! ou XHRIS-MD~)",
+      "required": true
+    },
+    "OWNER_NUMBER": {
+      "description": "Numéro propriétaire sans +",
+      "value": "237694600007",
+      "required": true
+    },
+    "PREFIX": { "value": ".", "required": false },
+    "MODE": { "value": "public", "required": false }
+  }
+}
