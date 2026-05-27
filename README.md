@@ -1,21 +1,21 @@
 # XHRIS MD V2
 
-Bot WhatsApp Multi-Device avec système de fallback API et 200+ commandes.
+Bot WhatsApp Multi-Device avec systeme de fallback API et 200+ commandes.
 
-## 🚀 Déploiement
+## Deploiement
 
-[XHRIS HOST](https://xhrishost.site) — Hébergeur Premium des bots WhatsApp
+[XHRIS HOST](https://xhrishost.site) - Hebergeur Premium des bots WhatsApp
 
-## 📺 Chaîne
+## Chaine
 
 https://whatsapp.com/channel/0029Vark1I1AYlUR1G8YMX31
 
-## 🛡️ Variables
+## Variables
 
-- `SESSION_ID` — Session XHRIS-MD!...
-- `OWNER_NUMBER` — Votre numéro
+- `SESSION_ID` - Session XHRIS-MD!...
+- `OWNER_NUMBER` - Votre numero
 
-## 🌐 Architecture API
+## Architecture API
 
 Le bot utilise 4 APIs en cascade (fallback automatique) :
 1. `api.princetechn.com` (primaire)
@@ -25,6 +25,6 @@ Le bot utilise 4 APIs en cascade (fallback automatique) :
 
 Si une API tombe, le bot bascule automatiquement.
 
-## 🙏 Crédits
+## Credits
 
 Fork de PRINCE-MDX par Prince Tech. Refondu par XHRIS TECH.
