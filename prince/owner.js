@@ -1016,7 +1016,7 @@ gmd({
 
   if (!q) {
     const currentName = getSetting('BOT_NAME', botName);
-    return reply(`✏️ Current bot name: *${currentName}*\n\nUsage: .botname PRINCE-MDX`);
+    return reply(`✏️ Current bot name: *${currentName}*\n\nUsage: .botname XHRIS MD V2`);
   }
 
   const newName = q.trim();
@@ -1027,38 +1027,7 @@ gmd({
 });
 
 
-gmd({
-  pattern: "setprefix",
-  react: "⚙️",
-  aliases: ['prefix', 'changeprefix'],
-  category: "owner",
-  description: "Change the bot command prefix",
-}, async (from, Prince, conText) => {
-  const { q, reply, react, isSuperUser, getSetting, setSetting, botPrefix, quotedMsg } = conText;
-
-  if (!isSuperUser) {
-    await react("❌");
-    return reply("❌ Owner Only Command!");
-  }
-
-  let text = q?.trim() || "";
-  if (!text && quotedMsg) {
-    text = quotedMsg.conversation || quotedMsg.extendedTextMessage?.text || "";
-    text = text.trim();
-  }
-
-  if (!text) {
-    const currentPrefix = getSetting('PREFIX', botPrefix);
-    return reply(`⚙️ Current prefix: *${currentPrefix}*\n\nUsage: .setprefix !\nExample: .setprefix P\nExample: .setprefix #\nExample: .setprefix /\n\nYou can also *reply to a message* containing the prefix.`);
-  }
-
-  const newPrefix = text.charAt(0);
-  setSetting('PREFIX', newPrefix);
-
-  await reply(`✅ Prefix changed to: *${newPrefix}*\n\nNow use commands like: *${newPrefix}menu*`);
-  await react("✅");
-});
-
+// setprefix défini dans prince/settings.js (version améliorée avec support null)
 
 gmd({
   pattern: "botimg",
