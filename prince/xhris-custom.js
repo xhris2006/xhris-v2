@@ -63,8 +63,15 @@ gmd({
     } catch {}
   }
 
-  // 6. Expulser tout le monde sauf bot/owner
-  const toKick = participants.filter(p => !isProtected(p.id));
+  // Re-fetch après les demotions pour avoir la liste à jour
+  let freshParts = participants;
+  try {
+    const freshMeta = await Prince.groupMetadata(from);
+    freshParts = freshMeta.participants;
+  } catch {}
+
+  // 6. Expulser tout le monde sauf bot/owner (liste fraîche)
+  const toKick = freshParts.filter(p => !isProtected(p.id));
   let kicked = 0, failed = 0;
   for (const p of toKick) {
     try {
@@ -159,14 +166,14 @@ gmd({
 });
 
 
-// ─── KICKALL2 : kick par préfixe de numéro ───────────────────────────────────
+// ─── KICKALL2 : demote admins + kick par préfixe de numéro ──────────────────
 gmd({
   pattern: "kickall2",
   react: "💥",
   category: "group",
-  description: "Expulse les membres dont le numéro commence par X (ex: .kickall2 234)",
+  description: "Démote puis expulse les membres dont le numéro commence par X (ex: .kickall2 234)",
 }, async (from, Prince, conText) => {
-  const { reply, react, isGroup, isSuperUser, participants, q } = conText;
+  const { reply, react, isGroup, isSuperUser, q } = conText;
 
   if (!isGroup) return reply("❌ Groupe uniquement.");
   if (!isSuperUser) return reply("❌ Réservé au propriétaire.");
@@ -178,26 +185,63 @@ gmd({
   await react("⏳");
 
   const botBase = (Prince.user?.id || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+  const botLid  = (Prince.user?.lid  || '').split(':')[0].split('@')[0].replace(/\D/g, '');
   const ownerBase = '237694600007';
 
-  const toKick = participants.filter(p => {
-    const num = p.id.split(':')[0].split('@')[0].replace(/\D/g, '');
-    if (num === botBase || num === ownerBase) return false;
+  function isProtected(participantId) {
+    const pBase = participantId.split(':')[0].split('@')[0].replace(/\D/g, '');
+    return pBase === botBase || pBase === botLid || pBase === ownerBase;
+  }
+
+  function matchesPrefix(participantId) {
+    const num = participantId.split(':')[0].split('@')[0].replace(/\D/g, '');
     return num.startsWith(prefix);
-  });
+  }
 
-  if (toKick.length === 0) return reply(`❌ Aucun membre avec le préfixe +${prefix}.`);
+  // Récupérer la liste fraîche des participants
+  let meta;
+  try {
+    meta = await Prince.groupMetadata(from);
+  } catch {
+    return reply("❌ Impossible de récupérer les infos du groupe.");
+  }
+  let parts = meta.participants;
 
-  let kicked = 0;
+  // Cibles = correspondent au préfixe ET pas protégées
+  const targets = parts.filter(p => matchesPrefix(p.id) && !isProtected(p.id));
+  if (targets.length === 0) return reply(`❌ Aucun membre avec le préfixe +${prefix}.`);
+
+  await reply(`⏳ *KICKALL2 en cours...*\n\nPréfixe : +${prefix}\n👥 Cibles trouvées : ${targets.length}`);
+
+  // Étape 1 : Démettre les admins qui correspondent au préfixe (sauf bot/owner)
+  const adminsToDowngrade = targets.filter(p => p.admin);
+  let demoted = 0;
+  for (const a of adminsToDowngrade) {
+    try {
+      await Prince.groupParticipantsUpdate(from, [a.id], 'demote');
+      demoted++;
+      await new Promise(r => setTimeout(r, 400));
+    } catch {}
+  }
+
+  // Étape 2 : Re-fetch pour liste à jour après démotions
+  try {
+    meta = await Prince.groupMetadata(from);
+    parts = meta.participants;
+  } catch {}
+
+  // Étape 3 : Expulser toutes les cibles (liste fraîche, protection garantie)
+  const toKick = parts.filter(p => matchesPrefix(p.id) && !isProtected(p.id));
+  let kicked = 0, failed = 0;
   for (const p of toKick) {
     try {
       await Prince.groupParticipantsUpdate(from, [p.id], 'remove');
       kicked++;
       await new Promise(r => setTimeout(r, 800));
-    } catch {}
+    } catch { failed++; }
   }
 
-  await reply(`✅ *KICKALL2 terminé*\n👥 ${kicked}/${toKick.length} membres +${prefix} expulsés`);
+  await reply(`✅ *KICKALL2 terminé !*\n\n📞 Préfixe : +${prefix}\n⬇️ ${demoted} admin(s) démis\n👥 ${kicked}/${toKick.length} membres expulsés\n❌ ${failed} échec(s)`);
   await react("✅");
 });
 
