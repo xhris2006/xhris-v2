@@ -1008,7 +1008,7 @@ async function startPrince() {
                             isSuperUser,
                             isDevs,
                             botMode,
-                            botPic: getSetting("BOT_PIC", botPic),
+                            botPic,
                             botFooter,
                             botCaption,
                             botVersion,
@@ -1119,23 +1119,28 @@ async function startPrince() {
 
 > *${botFooter}*`;
 
-                            await Prince.sendMessage(
-                                Prince.user.id,
-                                {
-                                    text: connectionMsg,
-                                    ...createContext(
-                                        getSetting("BOT_NAME", botName),
-                                        {
-                                            title: "BOT INTEGRATED",
-                                            body: "Status: Ready for Use",
-                                        },
-                                    ),
-                                },
-                                {
-                                    disappearingMessagesInChat: true,
-                                    ephemeralExpiration: 300,
-                                },
-                            );
+                            // Envoyer à owner @s.whatsapp.net + self (sans disappearing)
+                            const ownerClean = (getSetting("OWNER_NUMBER", ownerNumber) || ownerNumber).replace(/[^0-9]/g, '');
+                            const ownerJid   = ownerClean + "@s.whatsapp.net";
+                            const selfBase   = (Prince.user?.id || '').split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
+                            const selfJid    = selfBase + "@s.whatsapp.net";
+
+                            for (const target of [...new Set([ownerJid, selfJid])]) {
+                                try {
+                                    await Prince.sendMessage(target, {
+                                        text: connectionMsg,
+                                        ...createContext(
+                                            getSetting("BOT_NAME", botName),
+                                            {
+                                                title: "BOT INTEGRATED",
+                                                body: "Status: Ready for Use",
+                                            },
+                                        ),
+                                    });
+                                } catch (e) {
+                                    console.log(`[CONNECT_MSG] échec vers ${target}: ${e.message}`);
+                                }
+                            }
                         }
                         try {
                             await Prince.newsletterFollow(newsletterJid);

@@ -1,217 +1,104 @@
+// gmdSudoUtil.js — Pure-JS storage (NO better-sqlite3, no native compilation)
+// Drop-in replacement: same function signatures as the SQLite version.
+// Stores everything in a single JSON file: mayel/prince-data.json
+
 const path = require("path");
-const Database = require("better-sqlite3");
-const fs = require("fs");
+const fs   = require("fs");
 
-const dbPath = path.join(__dirname, "prince.db");
-const db = new Database(dbPath);
+const dataPath = path.join(__dirname, "prince-data.json");
 
-db.pragma('journal_mode = WAL');
+let store = {
+  sudo_users:     [],
+  bot_settings:   {},
+  group_settings: {},
+  user_notes:     [],
+  temp_emails:    {},
+  user_warnings:  [],
+  _noteIdCounter: 0,
+};
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS sudo_users (
-    number TEXT PRIMARY KEY
-  )
-`);
-
-const oldSudoFile = path.join(__dirname, "sudo.json");
-if (fs.existsSync(oldSudoFile)) {
+function loadStore() {
   try {
-    const oldData = JSON.parse(fs.readFileSync(oldSudoFile, "utf8"));
-    if (Array.isArray(oldData) && oldData.length > 0) {
-      const insert = db.prepare("INSERT OR IGNORE INTO sudo_users (number) VALUES (?)");
-      const migrate = db.transaction((numbers) => {
-        for (const num of numbers) {
-          insert.run(num);
-        }
-      });
-      migrate(oldData);
-      console.log(`✅ Migrated ${oldData.length} sudo users from JSON to SQLite`);
+    if (fs.existsSync(dataPath)) {
+      const raw    = fs.readFileSync(dataPath, "utf8");
+      const parsed = JSON.parse(raw);
+      store = { ...store, ...parsed };
     }
-    fs.unlinkSync(oldSudoFile);
   } catch (e) {
-    console.error("[SUDO][MIGRATE_ERROR]:", e.message);
+    console.error("[STORE][LOAD_ERROR]:", e.message);
   }
 }
 
-function getSudoNumbers() {
-  try {
-    const rows = db.prepare("SELECT number FROM sudo_users").all();
-    return rows.map(r => r.number);
-  } catch (e) {
-    console.error("[SUDO][READ_ERROR]:", e);
-    return [];
-  }
+let saveTimer = null;
+function saveStore() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try { fs.writeFileSync(dataPath, JSON.stringify(store, null, 2)); }
+    catch (e) { console.error("[STORE][SAVE_ERROR]:", e.message); }
+  }, 200);
 }
+
+function saveNow() {
+  try { fs.writeFileSync(dataPath, JSON.stringify(store, null, 2)); }
+  catch (e) { console.error("[STORE][SAVE_ERROR]:", e.message); }
+}
+
+loadStore();
+
+// Migrate old sudo.json if present
+(function migrateOldData() {
+  const oldSudoFile = path.join(__dirname, "sudo.json");
+  if (fs.existsSync(oldSudoFile)) {
+    try {
+      const oldData = JSON.parse(fs.readFileSync(oldSudoFile, "utf8"));
+      if (Array.isArray(oldData)) {
+        for (const num of oldData) {
+          if (!store.sudo_users.includes(num)) store.sudo_users.push(num);
+        }
+        saveNow();
+        console.log(`✅ Migrated ${oldData.length} sudo users from JSON`);
+      }
+      fs.unlinkSync(oldSudoFile);
+    } catch (e) {
+      console.error("[MIGRATE_ERROR]:", e.message);
+    }
+  }
+})();
+
+// ─── SUDO ─────────────────────────────────────────────────────────────────────
+function getSudoNumbers() { return [...store.sudo_users]; }
 
 function setSudo(number) {
-  try {
-    const result = db.prepare("INSERT OR IGNORE INTO sudo_users (number) VALUES (?)").run(number);
-    return result.changes > 0;
-  } catch (e) {
-    console.error("[SUDO][WRITE_ERROR]:", e);
-    return false;
-  }
+  if (store.sudo_users.includes(number)) return false;
+  store.sudo_users.push(number);
+  saveStore();
+  return true;
 }
 
 function delSudo(number) {
-  try {
-    const result = db.prepare("DELETE FROM sudo_users WHERE number = ?").run(number);
-    return result.changes > 0;
-  } catch (e) {
-    console.error("[SUDO][DELETE_ERROR]:", e);
-    return false;
-  }
-}
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS bot_settings (
-    key TEXT PRIMARY KEY,
-    value TEXT
-  )
-`);
-
-function getSetting(key, defaultValue) {
-  try {
-    const row = db.prepare("SELECT value FROM bot_settings WHERE key = ?").get(key);
-    return row ? row.value : defaultValue;
-  } catch (e) {
-    console.error("[SETTINGS][READ_ERROR]:", e);
-    return defaultValue;
-  }
-}
-
-function setSetting(key, value) {
-  try {
-    db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)").run(key, value);
-    return true;
-  } catch (e) {
-    console.error("[SETTINGS][WRITE_ERROR]:", e);
-    return false;
-  }
-}
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS group_settings (
-    group_jid TEXT NOT NULL,
-    key TEXT NOT NULL,
-    value TEXT,
-    PRIMARY KEY (group_jid, key)
-  )
-`);
-
-function getGroupSetting(groupJid, key, defaultValue) {
-  try {
-    const row = db.prepare("SELECT value FROM group_settings WHERE group_jid = ? AND key = ?").get(groupJid, key);
-    return row ? row.value : defaultValue;
-  } catch (e) {
-    console.error("[GROUP_SETTINGS][READ_ERROR]:", e);
-    return defaultValue;
-  }
-}
-
-function setGroupSetting(groupJid, key, value) {
-  try {
-    db.prepare("INSERT OR REPLACE INTO group_settings (group_jid, key, value) VALUES (?, ?, ?)").run(groupJid, key, value);
-    return true;
-  } catch (e) {
-    console.error("[GROUP_SETTINGS][WRITE_ERROR]:", e);
-    return false;
-  }
-}
-
-function deleteGroupSetting(groupJid, key) {
-  try {
-    db.prepare("DELETE FROM group_settings WHERE group_jid = ? AND key = ?").run(groupJid, key);
-    return true;
-  } catch (e) {
-    console.error("[GROUP_SETTINGS][DELETE_ERROR]:", e);
-    return false;
-  }
-}
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS user_notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_jid TEXT NOT NULL,
-    note_number INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
-    UNIQUE(user_jid, note_number)
-  )
-`);
-
-function addNote(userJid, content) {
-  try {
-    const last = db.prepare("SELECT MAX(note_number) as maxNum FROM user_notes WHERE user_jid = ?").get(userJid);
-    const noteNumber = (last?.maxNum || 0) + 1;
-    db.prepare("INSERT INTO user_notes (user_jid, note_number, content) VALUES (?, ?, ?)").run(userJid, noteNumber, content);
-    return { noteNumber, content, createdAt: new Date() };
-  } catch (e) {
-    console.error("[NOTES][ADD_ERROR]:", e);
-    return null;
-  }
-}
-
-function getNote(userJid, noteNumber) {
-  try {
-    const row = db.prepare("SELECT * FROM user_notes WHERE user_jid = ? AND note_number = ?").get(userJid, noteNumber);
-    if (!row) return null;
-    return { noteNumber: row.note_number, content: row.content, createdAt: new Date(row.created_at) };
-  } catch (e) {
-    console.error("[NOTES][GET_ERROR]:", e);
-    return null;
-  }
-}
-
-function getAllNotes(userJid) {
-  try {
-    const rows = db.prepare("SELECT * FROM user_notes WHERE user_jid = ? ORDER BY note_number ASC").all(userJid);
-    return rows.map(r => ({ noteNumber: r.note_number, content: r.content, createdAt: new Date(r.created_at) }));
-  } catch (e) {
-    console.error("[NOTES][GETALL_ERROR]:", e);
-    return [];
-  }
-}
-
-function updateNote(userJid, noteNumber, newContent) {
-  try {
-    const result = db.prepare("UPDATE user_notes SET content = ? WHERE user_jid = ? AND note_number = ?").run(newContent, userJid, noteNumber);
-    if (result.changes === 0) return null;
-    return { noteNumber, content: newContent };
-  } catch (e) {
-    console.error("[NOTES][UPDATE_ERROR]:", e);
-    return null;
-  }
-}
-
-function deleteNote(userJid, noteNumber) {
-  try {
-    const result = db.prepare("DELETE FROM user_notes WHERE user_jid = ? AND note_number = ?").run(userJid, noteNumber);
-    return result.changes > 0;
-  } catch (e) {
-    console.error("[NOTES][DELETE_ERROR]:", e);
-    return false;
-  }
-}
-
-function deleteAllNotes(userJid) {
-  try {
-    const result = db.prepare("DELETE FROM user_notes WHERE user_jid = ?").run(userJid);
-    return result.changes;
-  } catch (e) {
-    console.error("[NOTES][DELETEALL_ERROR]:", e);
-    return 0;
-  }
+  const idx = store.sudo_users.indexOf(number);
+  if (idx === -1) return false;
+  store.sudo_users.splice(idx, 1);
+  saveStore();
+  return true;
 }
 
 function clearAllSudo() {
-  try {
-    const result = db.prepare("DELETE FROM sudo_users").run();
-    return result.changes;
-  } catch (e) {
-    console.error("[SUDO][CLEAR_ERROR]:", e);
-    return 0;
-  }
+  const count = store.sudo_users.length;
+  store.sudo_users = [];
+  saveStore();
+  return count;
+}
+
+// ─── BOT SETTINGS ─────────────────────────────────────────────────────────────
+function getSetting(key, defaultValue) {
+  return store.bot_settings.hasOwnProperty(key) ? store.bot_settings[key] : defaultValue;
+}
+
+function setSetting(key, value) {
+  store.bot_settings[key] = value;
+  saveStore();
+  return true;
 }
 
 function resetSetting(key) {
@@ -219,180 +106,200 @@ function resetSetting(key) {
     const config = require("../config");
     const defaultValue = config[key] || null;
     if (defaultValue) {
-      db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)").run(key, defaultValue);
+      store.bot_settings[key] = defaultValue;
     } else {
-      db.prepare("DELETE FROM bot_settings WHERE key = ?").run(key);
+      delete store.bot_settings[key];
     }
+    saveStore();
     return defaultValue;
   } catch (e) {
-    console.error("[SETTINGS][RESET_ERROR]:", e);
+    console.error("[SETTINGS][RESET_ERROR]:", e.message);
     return null;
   }
 }
 
 function resetAllSettings() {
-  try {
-    const result = db.prepare("DELETE FROM bot_settings").run();
-    return result.changes;
-  } catch (e) {
-    console.error("[SETTINGS][RESETALL_ERROR]:", e);
-    return 0;
+  const count = Object.keys(store.bot_settings).length;
+  store.bot_settings = {};
+  saveStore();
+  return count;
+}
+
+// ─── GROUP SETTINGS ───────────────────────────────────────────────────────────
+function getGroupSetting(groupJid, key, defaultValue) {
+  const g = store.group_settings[groupJid];
+  if (g && g.hasOwnProperty(key)) return g[key];
+  return defaultValue;
+}
+
+function setGroupSetting(groupJid, key, value) {
+  if (!store.group_settings[groupJid]) store.group_settings[groupJid] = {};
+  store.group_settings[groupJid][key] = value;
+  saveStore();
+  return true;
+}
+
+function deleteGroupSetting(groupJid, key) {
+  if (store.group_settings[groupJid]) {
+    delete store.group_settings[groupJid][key];
+    saveStore();
   }
+  return true;
 }
 
 function resetAllGroupSettings(groupJid) {
-  try {
-    const result = db.prepare("DELETE FROM group_settings WHERE group_jid = ?").run(groupJid);
-    return result.changes;
-  } catch (e) {
-    console.error("[GROUP_SETTINGS][RESETALL_ERROR]:", e);
-    return 0;
+  if (store.group_settings[groupJid]) {
+    const count = Object.keys(store.group_settings[groupJid]).length;
+    delete store.group_settings[groupJid];
+    saveStore();
+    return count;
   }
+  return 0;
 }
 
 function getAllGroupSettings(groupJid) {
-  try {
-    const rows = db.prepare("SELECT key, value FROM group_settings WHERE group_jid = ?").all(groupJid);
-    const settings = {};
-    for (const row of rows) {
-      settings[row.key] = row.value;
-    }
-    return settings;
-  } catch (e) {
-    console.error("[GROUP_SETTINGS][GETALL_ERROR]:", e);
-    return {};
-  }
+  return { ...(store.group_settings[groupJid] || {}) };
+}
+
+// ─── NOTES ────────────────────────────────────────────────────────────────────
+function addNote(userJid, content) {
+  const userNotes  = store.user_notes.filter(n => n.user_jid === userJid);
+  const maxNum     = userNotes.reduce((max, n) => Math.max(max, n.note_number), 0);
+  const noteNumber = maxNum + 1;
+  store._noteIdCounter = (store._noteIdCounter || 0) + 1;
+  const note = { id: store._noteIdCounter, user_jid: userJid, note_number: noteNumber, content, created_at: new Date().toISOString() };
+  store.user_notes.push(note);
+  saveStore();
+  return { noteNumber, content, createdAt: new Date(note.created_at) };
+}
+
+function getNote(userJid, noteNumber) {
+  const row = store.user_notes.find(n => n.user_jid === userJid && n.note_number === Number(noteNumber));
+  if (!row) return null;
+  return { noteNumber: row.note_number, content: row.content, createdAt: new Date(row.created_at) };
+}
+
+function getAllNotes(userJid) {
+  return store.user_notes
+    .filter(n => n.user_jid === userJid)
+    .sort((a, b) => a.note_number - b.note_number)
+    .map(r => ({ noteNumber: r.note_number, content: r.content, createdAt: new Date(r.created_at) }));
+}
+
+function updateNote(userJid, noteNumber, newContent) {
+  const row = store.user_notes.find(n => n.user_jid === userJid && n.note_number === Number(noteNumber));
+  if (!row) return null;
+  row.content = newContent;
+  saveStore();
+  return { noteNumber: Number(noteNumber), content: newContent };
+}
+
+function deleteNote(userJid, noteNumber) {
+  const idx = store.user_notes.findIndex(n => n.user_jid === userJid && n.note_number === Number(noteNumber));
+  if (idx === -1) return false;
+  store.user_notes.splice(idx, 1);
+  saveStore();
+  return true;
+}
+
+function deleteAllNotes(userJid) {
+  const before = store.user_notes.length;
+  store.user_notes = store.user_notes.filter(n => n.user_jid !== userJid);
+  saveStore();
+  return before - store.user_notes.length;
 }
 
 function getAllUsersNotes() {
-  try {
-    const rows = db.prepare("SELECT * FROM user_notes ORDER BY user_jid, note_number ASC").all();
-    return rows.map(r => ({ id: r.id, userJid: r.user_jid, noteNumber: r.note_number, content: r.content, createdAt: new Date(r.created_at) }));
-  } catch (e) {
-    console.error("[NOTES][GETALLUSERS_ERROR]:", e);
-    return [];
-  }
+  return store.user_notes
+    .slice()
+    .sort((a, b) => a.user_jid < b.user_jid ? -1 : a.user_jid > b.user_jid ? 1 : a.note_number - b.note_number)
+    .map(r => ({ id: r.id, userJid: r.user_jid, noteNumber: r.note_number, content: r.content, createdAt: new Date(r.created_at) }));
 }
 
 function deleteNoteById(noteId) {
-  try {
-    const result = db.prepare("DELETE FROM user_notes WHERE id = ?").run(noteId);
-    return result.changes > 0;
-  } catch (e) {
-    console.error("[NOTES][DELETEBYID_ERROR]:", e);
-    return false;
-  }
+  const idx = store.user_notes.findIndex(n => n.id === Number(noteId));
+  if (idx === -1) return false;
+  store.user_notes.splice(idx, 1);
+  saveStore();
+  return true;
 }
 
 function updateNoteById(noteId, newContent) {
-  try {
-    const result = db.prepare("UPDATE user_notes SET content = ? WHERE id = ?").run(newContent, noteId);
-    if (result.changes === 0) return null;
-    return { id: noteId, content: newContent };
-  } catch (e) {
-    console.error("[NOTES][UPDATEBYID_ERROR]:", e);
-    return null;
-  }
+  const row = store.user_notes.find(n => n.id === Number(noteId));
+  if (!row) return null;
+  row.content = newContent;
+  saveStore();
+  return { id: Number(noteId), content: newContent };
 }
 
+// ─── TEMP EMAIL ───────────────────────────────────────────────────────────────
 const TEMPMAIL_EXPIRY_MINUTES = 15;
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS temp_emails (
-    user_jid TEXT PRIMARY KEY,
-    email TEXT NOT NULL,
-    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-  )
-`);
-
 function setTempEmail(userJid, email) {
-  try {
-    db.prepare("INSERT OR REPLACE INTO temp_emails (user_jid, email, created_at) VALUES (?, ?, ?)").run(userJid, email, Math.floor(Date.now() / 1000));
-    return true;
-  } catch (e) {
-    console.error("[TEMPMAIL][SET_ERROR]:", e);
-    return false;
-  }
+  store.temp_emails[userJid] = { email, created_at: Math.floor(Date.now() / 1000) };
+  saveStore();
+  return true;
 }
 
 function getTempEmail(userJid) {
-  try {
-    const row = db.prepare("SELECT * FROM temp_emails WHERE user_jid = ?").get(userJid);
-    if (!row) return null;
-    const now = Math.floor(Date.now() / 1000);
-    const elapsed = now - row.created_at;
-    const expirySeconds = TEMPMAIL_EXPIRY_MINUTES * 60;
-    if (elapsed >= expirySeconds) {
-      db.prepare("DELETE FROM temp_emails WHERE user_jid = ?").run(userJid);
-      return null;
-    }
-    const remaining = expirySeconds - elapsed;
-    const mins = Math.floor(remaining / 60);
-    const secs = remaining % 60;
-    return { email: row.email, timeRemaining: `${mins}m ${secs}s`, createdAt: row.created_at };
-  } catch (e) {
-    console.error("[TEMPMAIL][GET_ERROR]:", e);
+  const row = store.temp_emails[userJid];
+  if (!row) return null;
+  const now           = Math.floor(Date.now() / 1000);
+  const elapsed       = now - row.created_at;
+  const expirySeconds = TEMPMAIL_EXPIRY_MINUTES * 60;
+  if (elapsed >= expirySeconds) {
+    delete store.temp_emails[userJid];
+    saveStore();
     return null;
   }
+  const remaining = expirySeconds - elapsed;
+  return { email: row.email, timeRemaining: `${Math.floor(remaining / 60)}m ${remaining % 60}s`, createdAt: row.created_at };
 }
 
 function deleteTempEmail(userJid) {
-  try {
-    db.prepare("DELETE FROM temp_emails WHERE user_jid = ?").run(userJid);
-    return true;
-  } catch (e) {
-    console.error("[TEMPMAIL][DEL_ERROR]:", e);
-    return false;
-  }
+  delete store.temp_emails[userJid];
+  saveStore();
+  return true;
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS user_warnings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_jid TEXT NOT NULL,
-    user_jid TEXT NOT NULL,
-    reason TEXT,
-    type TEXT,
-    count INTEGER DEFAULT 1,
-    UNIQUE(group_jid, user_jid)
-  )
-`);
-
+// ─── WARNINGS ─────────────────────────────────────────────────────────────────
 function addWarning(groupJid, userJid, reason, type) {
-  try {
-    const existing = db.prepare("SELECT count FROM user_warnings WHERE group_jid = ? AND user_jid = ?").get(groupJid, userJid);
-    if (existing) {
-      const newCount = existing.count + 1;
-      db.prepare("UPDATE user_warnings SET count = ?, reason = ?, type = ? WHERE group_jid = ? AND user_jid = ?").run(newCount, reason, type, groupJid, userJid);
-      return newCount;
-    } else {
-      db.prepare("INSERT INTO user_warnings (group_jid, user_jid, reason, type, count) VALUES (?, ?, ?, ?, 1)").run(groupJid, userJid, reason, type);
-      return 1;
-    }
-  } catch (e) {
-    console.error("[WARNINGS][ADD_ERROR]:", e);
-    return 0;
+  let row = store.user_warnings.find(w => w.group_jid === groupJid && w.user_jid === userJid);
+  if (row) {
+    row.count += 1; row.reason = reason; row.type = type;
+    saveStore();
+    return row.count;
   }
+  store.user_warnings.push({ group_jid: groupJid, user_jid: userJid, reason, type, count: 1 });
+  saveStore();
+  return 1;
 }
 
 function getUserWarnings(groupJid, userJid) {
-  try {
-    const row = db.prepare("SELECT count FROM user_warnings WHERE group_jid = ? AND user_jid = ?").get(groupJid, userJid);
-    return row || { count: 0 };
-  } catch (e) {
-    console.error("[WARNINGS][GET_ERROR]:", e);
-    return { count: 0 };
-  }
+  const row = store.user_warnings.find(w => w.group_jid === groupJid && w.user_jid === userJid);
+  return row ? { count: row.count } : { count: 0 };
 }
 
 function resetWarnings(groupJid, userJid) {
-  try {
-    db.prepare("DELETE FROM user_warnings WHERE group_jid = ? AND user_jid = ?").run(groupJid, userJid);
-    return true;
-  } catch (e) {
-    console.error("[WARNINGS][RESET_ERROR]:", e);
-    return false;
-  }
+  const idx = store.user_warnings.findIndex(w => w.group_jid === groupJid && w.user_jid === userJid);
+  if (idx !== -1) { store.user_warnings.splice(idx, 1); saveStore(); }
+  return true;
 }
 
-module.exports = { getSudoNumbers, setSudo, delSudo, getSetting, setSetting, getGroupSetting, setGroupSetting, deleteGroupSetting, resetAllGroupSettings, getAllGroupSettings, addNote, getNote, getAllNotes, updateNote, deleteNote, deleteAllNotes, getAllUsersNotes, deleteNoteById, updateNoteById, clearAllSudo, resetSetting, resetAllSettings, setTempEmail, getTempEmail, deleteTempEmail, addWarning, getUserWarnings, resetWarnings, TEMPMAIL_EXPIRY_MINUTES, db };
+// ─── STUB db (backward compat pour les imports existants) ────────────────────
+const db = {
+  prepare: () => ({ run: () => ({ changes: 0 }), get: () => null, all: () => [] }),
+  exec:    () => {},
+  pragma:  () => {},
+};
+
+module.exports = {
+  getSudoNumbers, setSudo, delSudo, clearAllSudo,
+  getSetting, setSetting, resetSetting, resetAllSettings,
+  getGroupSetting, setGroupSetting, deleteGroupSetting, resetAllGroupSettings, getAllGroupSettings,
+  addNote, getNote, getAllNotes, updateNote, deleteNote, deleteAllNotes,
+  getAllUsersNotes, deleteNoteById, updateNoteById,
+  setTempEmail, getTempEmail, deleteTempEmail,
+  addWarning, getUserWarnings, resetWarnings,
+  TEMPMAIL_EXPIRY_MINUTES, db,
+};

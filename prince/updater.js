@@ -117,6 +117,7 @@ gmd(
         ".env",
         "session",
         "config.js",
+        "mayel/prince-data.json",
         "mayel/prince.db",
         "node_modules",
         "package-lock.json",
