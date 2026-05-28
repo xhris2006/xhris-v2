@@ -259,41 +259,67 @@ gmd({
     description: "Convert text to speech audio",
 }, async (from, Prince, conText) => {
     const { q, mek, reply, react, quoted, quotedMsg } = conText;
+
+    let text;
+    if (q) {
+        text = q;
+    } else if (quotedMsg && quoted) {
+        text = quoted?.conversation || quoted?.extendedTextMessage?.text || null;
+    }
+
+    if (!text) {
+        await react("❌");
+        return reply("🗣️ *Text to Speech*\n\nUsage: .tts <texte>\nOu réponds à un message avec .tts");
+    }
+
+    await react("⏳");
+
+    // 1. Google TTS (le plus fiable, gratuit, pas d'API key)
     try {
-        let text;
-        if (q) {
-            text = q;
-        } else if (quotedMsg) {
-            text = quoted?.conversation || quoted?.extendedTextMessage?.text || quoted?.text || null;
-            if (!text) {
-                await react("❌");
-                return reply("❌ Could not extract text from the quoted message.");
-            }
-        } else {
-            await react("❌");
-            return reply("🗣️ *Text to Speech*\n\nUsage: .tts <text> or reply to a message with .tts");
-        }
-
-        const apiUrl = `https://apiskeith.vercel.app/ai/text2speech?q=${encodeURIComponent(text)}`;
-        const { data } = await axios.get(apiUrl, { timeout: 60000 });
-        const result = data?.result;
-
-        if (!result || result.Error !== 0 || !result.URL) {
-            await react("❌");
-            return reply("❌ Failed to generate speech.");
-        }
-
+        const googleTTS = require('google-tts-api');
+        const ttsUrl = googleTTS.getAudioUrl(text, {
+            lang: 'fr',
+            slow: false,
+            host: 'https://translate.google.com',
+        });
+        const res = await axios.get(ttsUrl, { responseType: 'arraybuffer', timeout: 30000 });
         await Prince.sendMessage(from, {
-            audio: { url: result.URL },
-            mimetype: "audio/mpeg",
-            ptt: false,
+            audio: Buffer.from(res.data),
+            mimetype: 'audio/mpeg',
+            ptt: true
         }, { quoted: mek });
         await react("✅");
+        return;
     } catch (e) {
-        console.error("TTS Error:", e);
-        await react("❌");
-        await reply("⚠️ An error occurred while generating speech.");
+        console.log('[TTS] Google failed:', e.message);
     }
+
+    // 2. Fallback : APIs tierces
+    const apis = [
+        `https://api.princetechn.com/api/tools/tts?apikey=prince_api_56yjJ568dte4&text=${encodeURIComponent(text)}`,
+        `https://api.giftedtech.web.id/api/tools/tts?apikey=gifted&text=${encodeURIComponent(text)}`,
+        `https://apiskeith.vercel.app/ai/text2speech?q=${encodeURIComponent(text)}`,
+    ];
+
+    for (const api of apis) {
+        try {
+            const { data } = await axios.get(api, { timeout: 30000 });
+            const audioUrl = data?.result?.URL || data?.result?.audio || data?.result?.url || data?.url || data?.audio_url;
+            if (audioUrl) {
+                const audioRes = await axios.get(audioUrl, { responseType: 'arraybuffer', timeout: 30000 });
+                await Prince.sendMessage(from, {
+                    audio: Buffer.from(audioRes.data),
+                    mimetype: 'audio/mpeg',
+                    ptt: true
+                }, { quoted: mek });
+                await react("✅");
+                return;
+            }
+        } catch { continue; }
+    }
+
+    await react("❌");
+    return reply("❌ TTS indisponible sur toutes les sources. Réessaie plus tard.");
 });
 
 gmd({

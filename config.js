@@ -1,6 +1,10 @@
 const fs = require('fs-extra');
 const path = require("path");
 
+// Image hébergée sur GitHub raw — fonctionne partout sans env var
+const defaultBotPic = process.env.BOT_PIC
+  || 'https://raw.githubusercontent.com/xhris2006/xhris-v2/main/assets/xhris-md-v2.jpg';
+
 module.exports = {
     SESSION_ID: process.env.SESSION_ID || '',
     PREFIX: process.env.PREFIX || ".",
@@ -11,7 +15,7 @@ module.exports = {
     FOOTER: process.env.FOOTER || 'ᴘᴏᴡᴇʀᴇᴅ ʙʏ xʜʀɪs ᴛᴇᴄʜ',
     CAPTION: process.env.CAPTION || '©𝟐𝟎𝟐𝟔 𝐗𝐇𝐑𝐈𝐒 𝐌𝐃 𝐕𝟐',
     VERSION: process.env.VERSION || '2.0.0',
-    BOT_PIC: process.env.BOT_PIC || 'https://i.ibb.co/xqMvV7np/vw-EDOo-Tm-N0.jpg',
+    BOT_PIC: defaultBotPic, // URL GitHub raw par défaut — override avec process.env.BOT_PIC
     MODE: process.env.MODE || "public",
     PM_PERMIT: process.env.PM_PERMIT || 'false',
     WARN_COUNT: process.env.WARN_COUNT || '3',

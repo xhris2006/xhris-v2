@@ -329,7 +329,7 @@ gmd({
   const validModes = ['chat', 'group', 'all', 'off'];
 
   if (!input || !validModes.includes(input)) {
-    const statusText = `*𝐏𝐑𝐈𝐍𝐂𝐄 𝐌𝐃𝐗 𝐀𝐍𝐓𝐈𝐃𝐄𝐋𝐄𝐓𝐄 𝐒𝐄𝐓𝐓𝐈𝐍𝐆𝐒*
+    const statusText = `*𝐗𝐇𝐑𝐈𝐒 𝐌𝐃 𝐕𝟐 𝐀𝐍𝐓𝐈𝐃𝐄𝐋𝐄𝐓𝐄 𝐒𝐄𝐓𝐓𝐈𝐍𝐆𝐒*
 
 📊 Current Mode: *${currentMode.toUpperCase()}*
 
@@ -344,7 +344,7 @@ _Or use directly:_
 *.antidelete chat/group/all/off*
 
 ╭────────────────◆  
-│ ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴘɪɴᴄᴇ ᴛᴇᴄʜ  
+│ ᴘᴏᴡᴇʀᴇᴅ ʙʏ xʜʀɪs ᴛᴇᴄʜ
 ╰─────────────────◆`;
 
     const sentMsg = await Prince.sendMessage(from, {
@@ -1061,6 +1061,7 @@ gmd({
       const newUrl = result.url;
       setSetting('BOT_PIC', newUrl);
       try { const cfg = require('../config'); cfg.BOT_PIC = newUrl; } catch (e) {}
+      try { if (conText) conText.botPic = newUrl; } catch (e) {}
 
       await Prince.sendMessage(from, {
         image: { url: newUrl },
@@ -1093,6 +1094,7 @@ gmd({
 
   setSetting('BOT_PIC', newUrl);
   try { const cfg = require('../config'); cfg.BOT_PIC = newUrl; } catch (e) {}
+  try { if (conText) conText.botPic = newUrl; } catch (e) {}
 
   await Prince.sendMessage(from, {
     image: { url: newUrl },

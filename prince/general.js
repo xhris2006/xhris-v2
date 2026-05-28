@@ -253,3 +253,36 @@ gmd({
     await reply(`❌ Failed to save the message. Error: ${error.message}`);
   }
 });
+
+
+// ─── CHARGER LES COMMANDES CUSTOM au démarrage ───────────────────────────────
+(function loadCustomCommands() {
+  try {
+    const fs   = require('fs');
+    const path = require('path');
+    const customCmdsPath = path.join(__dirname, '..', 'data', 'custom-cmds.json');
+
+    if (!fs.existsSync(customCmdsPath)) return;
+
+    const cmds = JSON.parse(fs.readFileSync(customCmdsPath, 'utf8'));
+    let count = 0;
+
+    for (const [name, response] of Object.entries(cmds)) {
+      gmd({
+        pattern: name,
+        category: "custom",
+        description: `Commande custom: ${name}`,
+        dontAddCommandList: false,
+      }, async (from, Prince, conText) => {
+        const { reply, react } = conText;
+        await reply(response);
+        await react("✅");
+      });
+      count++;
+    }
+
+    if (count > 0) console.log(`✅ ${count} commande(s) custom chargée(s)`);
+  } catch (e) {
+    console.error('❌ Failed to load custom cmds:', e.message);
+  }
+})();
