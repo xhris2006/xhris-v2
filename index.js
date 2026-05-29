@@ -467,11 +467,15 @@ async function startPrince() {
                 ) {
                     const princetech = jidNormalizedUser(Prince.user.id);
 
-                    if (autoReadStatus === "true") {
-                        await Prince.readMessages([mek.key, princetech]);
+                    if (getSetting("AUTO_READ_STATUS", autoReadStatus) === "true") {
+                        try {
+                            await Prince.readMessages([mek.key]);
+                        } catch (e) {
+                            console.log("[STATUS] read failed:", e.message);
+                        }
                     }
 
-                    if (autoLikeStatus === "true" && mek.key.participant) {
+                    if (getSetting("AUTO_LIKE_STATUS", autoLikeStatus) === "true" && mek.key.participant) {
                         const emojis =
                             statusLikeEmojis?.split(",") || "💛,❤️,💜,🤍,💙";
                         const randomEmoji =
@@ -488,7 +492,7 @@ async function startPrince() {
                         );
                     }
 
-                    if (autoReplyStatus === "true") {
+                    if (getSetting("AUTO_REPLY_STATUS", autoReplyStatus) === "true") {
                         if (mek.key.fromMe) return;
                         const customMessage =
                             statusReplyText || "✅ Status Viewed By Prince-Md";

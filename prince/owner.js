@@ -496,97 +496,101 @@ gmd({
   }
 });
 
-// Cleans and validates a candidate block JID. Returns null if invalid.
-function sanitizeBlockJid(jid) {
-  if (!jid || typeof jid !== "string") return null;
-
-  // @lid case: validate the xxxx@lid format
-  if (jid.endsWith("@lid")) {
-    const lidNum = jid.split("@")[0].replace(/[^0-9]/g, "");
-    if (lidNum.length < 5) return null;
-    return `${lidNum}@lid`;
-  }
-
-  // Keep only digits from the part before the first @ — this strips double
-  // suffixes (@s.whatsapp.net@s.whatsapp.net), device parts (:12), and junk.
-  const base = jid.split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
-  if (base.length < 8) return null;
-
-  return `${base}@s.whatsapp.net`;
-}
-
-// Returns { candidates: [...jids to try] } or { error: "..." } or null
+// Resolves the { lid, pnJid } pair for a contact, required by the new block protocol.
+// Returns { lid, pnJid } or { error: "..." } or null.
 async function resolveBlockTarget(conText, from, Prince) {
   const { mentionedJid, quotedUser, q } = conText;
-  let target = (mentionedJid && mentionedJid[0]) || quotedUser || null;
-  if (!target && q) {
+  let raw = (mentionedJid && mentionedJid[0]) || quotedUser || null;
+  if (!raw && q) {
     const num = q.replace(/[^0-9]/g, "");
-    if (num.length >= 8) target = num + "@s.whatsapp.net";
+    if (num.length >= 8) raw = num + "@s.whatsapp.net";
   }
   // In a private chat with no explicit target, act on the current chat
-  if (!target && !from.endsWith("@g.us")) target = from;
-  if (!target) return null;
-  if (target.endsWith("@g.us")) return null; // never block a group
+  if (!raw && !from.endsWith("@g.us")) raw = from;
+  if (!raw) return null;
+  if (raw.endsWith("@g.us")) return null; // never block a group
 
-  const candidates = [];
+  let lid = null;
+  let pnJid = null;
 
-  // If we got a @lid, try to resolve it to a real JID, but KEEP the lid too
-  if (target.endsWith("@lid")) {
-    candidates.push(target); // the lid itself is a valid block candidate
+  // Case 1: we already have a LID
+  if (raw.endsWith("@lid")) {
+    lid = raw.split("@")[0].replace(/[^0-9]/g, "") + "@lid";
+    // Try to find the matching phone number (pn)
     if (Prince.getJidFromLid) {
       try {
-        const resolved = await Prince.getJidFromLid(target);
-        if (resolved && !candidates.includes(resolved)) candidates.push(resolved);
+        const resolved = await Prince.getJidFromLid(raw);
+        if (resolved && resolved.endsWith("@s.whatsapp.net")) pnJid = resolved;
       } catch (e) {}
     }
   }
+  // Case 2: we have a phone-number @s.whatsapp.net (or just a number)
+  else {
+    if (!raw.includes("@")) raw = raw + "@s.whatsapp.net";
+    const num = raw.split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+    if (num.length < 8) return null;
+    pnJid = num + "@s.whatsapp.net";
 
-  // Normalize to a phone-number JID if there is no @
-  if (!target.includes("@")) target = target + "@s.whatsapp.net";
-
-  // If it is a phone-number JID, verify via onWhatsApp to get canonical jid + lid
-  if (target.endsWith("@s.whatsapp.net") && typeof Prince.onWhatsApp === "function") {
-    try {
-      const num = target.split("@")[0].replace(/[^0-9]/g, "");
-      const results = await Prince.onWhatsApp(num);
-      if (Array.isArray(results) && results[0]) {
-        const r = results[0];
-        if (!r.exists) return { error: "__NOT_ON_WHATSAPP__" };
-        if (r.jid && !candidates.includes(r.jid)) candidates.push(r.jid);
-        if (r.lid && !candidates.includes(r.lid)) candidates.push(r.lid);
+    // Resolve the LID via onWhatsApp
+    if (typeof Prince.onWhatsApp === "function") {
+      try {
+        const results = await Prince.onWhatsApp(num);
+        if (Array.isArray(results) && results[0]) {
+          const r = results[0];
+          if (!r.exists) return { error: "__NOT_ON_WHATSAPP__" };
+          if (r.lid) {
+            lid = (typeof r.lid === "string" ? r.lid : "").split("@")[0].replace(/[^0-9]/g, "") + "@lid";
+          }
+          // some forks return the canonical jid
+          if (r.jid && r.jid.endsWith("@s.whatsapp.net")) pnJid = r.jid;
+        }
+      } catch (e) {
+        console.log("[BLOCK] onWhatsApp failed:", e.message);
       }
-    } catch (e) {
-      console.log("[BLOCK] onWhatsApp check failed:", e.message);
     }
   }
 
-  // Always include the constructed target as a last resort
-  if (!candidates.includes(target)) candidates.push(target);
-
-  // Sanitize: clean each candidate and drop duplicates + invalid ones
-  const clean = [];
-  for (const c of candidates) {
-    const s = sanitizeBlockJid(c);
-    if (s && !clean.includes(s)) clean.push(s);
-  }
-
-  if (clean.length === 0) return null;
-  return { candidates: clean };
+  if (!lid && !pnJid) return null;
+  return { lid, pnJid };
 }
 
 
-// Tries each candidate until one succeeds. Returns { ok, jid } or { ok:false, error }
-async function applyBlockAction(Prince, candidates, action) {
+// Sends the block/unblock request with the NEW WhatsApp protocol.
+// Tries the LID+pn_jid format first, then fallbacks.
+async function applyBlockAction(Prince, target, action) {
+  const S_WA = "s.whatsapp.net";
+
+  // Build the list of attempts (each attempt = item attrs)
+  const attempts = [];
+
+  // Attempt 1: new protocol (jid=LID, pn_jid=number) — the current format
+  if (target.lid) {
+    const attrs = { action, jid: target.lid };
+    if (action === "block" && target.pnJid) attrs.pn_jid = target.pnJid;
+    attempts.push(attrs);
+  }
+  // Attempt 2: old protocol (jid=number) — in case the server still accepts it
+  if (target.pnJid) {
+    attempts.push({ action, jid: target.pnJid });
+  }
+
+  if (attempts.length === 0) {
+    return { ok: false, error: "no valid target" };
+  }
+
   let lastError = null;
-  for (const jid of candidates) {
+  for (const itemAttrs of attempts) {
     try {
-      await Prince.updateBlockStatus(jid, action);
-      return { ok: true, jid };
+      await Prince.query({
+        tag: "iq",
+        attrs: { xmlns: "blocklist", to: S_WA, type: "set" },
+        content: [{ tag: "item", attrs: itemAttrs }],
+      });
+      return { ok: true, jid: itemAttrs.pn_jid || itemAttrs.jid };
     } catch (e) {
       lastError = e;
       const msg = e?.message || "";
-      // If the error is NOT a plain bad-request (e.g. network/500), stop to
-      // avoid risking a socket crash by looping on more failing calls.
+      // If the error is a serious network/server error (not a plain bad-request), stop
       if (!msg.includes("bad-request") && !msg.includes("not-authorized") && !msg.includes("item-not-found")) {
         break;
       }
@@ -605,31 +609,32 @@ gmd({
 
   if (!isSuperUser) return reply("❌ Owner Only Command!");
 
-  const result = await resolveBlockTarget(conText, from, Prince);
+  const target = await resolveBlockTarget(conText, from, Prince);
 
-  if (result && result.error === "__NOT_ON_WHATSAPP__") {
+  if (target && target.error === "__NOT_ON_WHATSAPP__") {
     await react("❌");
     return reply("❌ This number is not registered on WhatsApp.");
   }
-  if (!result || !result.candidates || result.candidates.length === 0) {
+  if (!target || (!target.lid && !target.pnJid)) {
     await react("❌");
     return reply("❌ Reply to, mention, or provide the number of the user to block.\n\n*Example:* .block 254712345678");
   }
 
-  const outcome = await applyBlockAction(Prince, result.candidates, "block");
+  const outcome = await applyBlockAction(Prince, target, "block");
   if (!outcome.ok) {
     await react("❌");
     return reply(`❌ Failed to block user: ${outcome.error}`);
   }
 
   await react("✅");
-  const shown = outcome.jid.split("@")[0];
+  const shown = (outcome.jid || "").split("@")[0];
+  const mentionJid = target.pnJid || target.lid;
   await Prince.sendMessage(
     from,
     {
       text: `🚫 Successfully blocked @${shown}.`,
-      mentions: [outcome.jid],
-      contextInfo: { mentionedJid: [outcome.jid], ...getContextInfo(outcome.jid, newsletterJid, botName) },
+      mentions: [mentionJid],
+      contextInfo: { mentionedJid: [mentionJid], ...getContextInfo(mentionJid, newsletterJid, botName) },
     },
     { quoted: mek },
   );
@@ -645,31 +650,32 @@ gmd({
 
   if (!isSuperUser) return reply("❌ Owner Only Command!");
 
-  const result = await resolveBlockTarget(conText, from, Prince);
+  const target = await resolveBlockTarget(conText, from, Prince);
 
-  if (result && result.error === "__NOT_ON_WHATSAPP__") {
+  if (target && target.error === "__NOT_ON_WHATSAPP__") {
     await react("❌");
     return reply("❌ This number is not registered on WhatsApp.");
   }
-  if (!result || !result.candidates || result.candidates.length === 0) {
+  if (!target || (!target.lid && !target.pnJid)) {
     await react("❌");
     return reply("❌ Reply to, mention, or provide the number of the user to unblock.\n\n*Example:* .unblock 254712345678");
   }
 
-  const outcome = await applyBlockAction(Prince, result.candidates, "unblock");
+  const outcome = await applyBlockAction(Prince, target, "unblock");
   if (!outcome.ok) {
     await react("❌");
     return reply(`❌ Failed to unblock user: ${outcome.error}`);
   }
 
   await react("✅");
-  const shown = outcome.jid.split("@")[0];
+  const shown = (outcome.jid || "").split("@")[0];
+  const mentionJid = target.pnJid || target.lid;
   await Prince.sendMessage(
     from,
     {
       text: `✅ Successfully unblocked @${shown}.`,
-      mentions: [outcome.jid],
-      contextInfo: { mentionedJid: [outcome.jid], ...getContextInfo(outcome.jid, newsletterJid, botName) },
+      mentions: [mentionJid],
+      contextInfo: { mentionedJid: [mentionJid], ...getContextInfo(mentionJid, newsletterJid, botName) },
     },
     { quoted: mek },
   );
