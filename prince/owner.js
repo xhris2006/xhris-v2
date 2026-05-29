@@ -517,6 +517,27 @@ async function resolveBlockTarget(conText, from, Prince) {
 
   // Normalize to a phone-number JID
   if (!target.includes("@")) target = target + "@s.whatsapp.net";
+
+  // CRITICAL FIX: verify the number on WhatsApp to get the canonical JID.
+  // Building "number@s.whatsapp.net" manually causes "bad-request" on updateBlockStatus.
+  if (target.endsWith("@s.whatsapp.net") && typeof Prince.onWhatsApp === "function") {
+    try {
+      const num = target.split("@")[0].replace(/[^0-9]/g, "");
+      const results = await Prince.onWhatsApp(num);
+      if (Array.isArray(results) && results[0]) {
+        if (results[0].exists === false) {
+          return "__NOT_ON_WHATSAPP__";
+        }
+        if (results[0].jid) {
+          target = results[0].jid;
+        }
+      }
+    } catch (e) {
+      // If onWhatsApp fails, keep the constructed JID as fallback
+      console.log("[BLOCK] onWhatsApp check failed:", e.message);
+    }
+  }
+
   return target;
 }
 
@@ -531,6 +552,10 @@ gmd({
   if (!isSuperUser) return reply("❌ Owner Only Command!");
 
   const target = await resolveBlockTarget(conText, from, Prince);
+  if (target === "__NOT_ON_WHATSAPP__") {
+    await react("❌");
+    return reply("❌ This number is not registered on WhatsApp.");
+  }
   if (!target || target.endsWith("@g.us") || target.endsWith("@lid")) {
     await react("❌");
     return reply("❌ Reply to, mention, or provide the number of the user to block.\n\n*Example:* .block 254712345678");
@@ -565,6 +590,10 @@ gmd({
   if (!isSuperUser) return reply("❌ Owner Only Command!");
 
   const target = await resolveBlockTarget(conText, from, Prince);
+  if (target === "__NOT_ON_WHATSAPP__") {
+    await react("❌");
+    return reply("❌ This number is not registered on WhatsApp.");
+  }
   if (!target || target.endsWith("@g.us") || target.endsWith("@lid")) {
     await react("❌");
     return reply("❌ Reply to, mention, or provide the number of the user to unblock.\n\n*Example:* .unblock 254712345678");
