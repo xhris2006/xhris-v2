@@ -609,7 +609,7 @@ gmd(
 gmd(
   {
     pattern: "groupsettings",
-    aliases: ["gcsettings", "gcset", "groupset", "gsettings"],
+    aliases: ["gcsettings", "gsettings", "viewgroupsettings"],
     react: "⚙️",
     category: "group",
     description: "View all settings for this group",

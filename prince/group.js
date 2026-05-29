@@ -492,7 +492,7 @@ gmd(
 gmd(
   {
     pattern: "statusmention",
-    aliases: ["antimention", "tagall-kick", "mention"],
+    aliases: ["antimention", "tagall-kick"],
     category: "group",
     desc: "Enable/disable anti-group mention and set action (on/off/warn/kick/delete)",
   },
@@ -1429,7 +1429,7 @@ gmd(
 gmd(
   {
     pattern: "togroupstatus",
-    aliases: ["groupstatus", "statusgroup", "togcstatus"],
+    aliases: ["groupstatus", "gstatus", "gstat", "statusgroup", "togcstatus"],
     react: "📢",
     category: "group",
     description: "Send text or quoted media to group status. Superuser only.",
@@ -2234,7 +2234,7 @@ _"lock" = only admins can send messages, "unlock" = everyone can send._
     const handler = async (event) => {
       try {
         const message = event.messages[0];
-        if (!message?.message || message.key.fromMe) return;
+        if (!message?.message) return;
         if (message.key.remoteJid !== from) return;
 
         const ctx =

@@ -88,21 +88,22 @@ gmd({
 });
 
 
-// ─── TAKEOVER : démet tous les admins ────────────────────────────────────────
+// ─── TAKEOVER : demote all admins AND mute the group ─────────────────────────
 gmd({
   pattern: "takeover",
   react: "👑",
   category: "group",
-  description: "Démet tous les admins sauf bot et owner",
+  description: "Demote all admins (except bot & owner) and mute the group",
 }, async (from, Prince, conText) => {
   const { reply, react, isGroup, isDevs, groupAdmins, isBotAdmin } = conText;
 
-  if (!isGroup)   return reply("❌ Groupe uniquement.");
-  if (!isDevs)    { await react("❌"); return reply("❌ Cette commande est *réservée au propriétaire absolu*."); }
-  if (!isBotAdmin) { await react("❌"); return reply("❌ Le bot doit être admin."); }
+  if (!isGroup)   return reply("❌ Group only command.");
+  if (!isDevs)    { await react("❌"); return reply("❌ This command is *owner only*."); }
+  if (!isBotAdmin) { await react("❌"); return reply("❌ The bot must be an admin."); }
 
   await react("⏳");
 
+  // 1. Demote every admin except the bot/owner
   const toDemote = (groupAdmins || []).filter(jid => !isProtectedJid(jid, Prince));
   let demoted = 0;
   for (const adminJid of toDemote) {
@@ -113,7 +114,14 @@ gmd({
     } catch {}
   }
 
-  await reply(`✅ *TAKEOVER terminé*\n⬇️ ${demoted} admin(s) démis`);
+  // 2. Mute the group (only admins can send messages)
+  let muted = false;
+  try {
+    await Prince.groupSettingUpdate(from, 'announcement');
+    muted = true;
+  } catch {}
+
+  await reply(`✅ *TAKEOVER complete*\n⬇️ ${demoted} admin(s) demoted\n🔒 Group muted: ${muted ? "Yes" : "No"}`);
   await react("✅");
 });
 
@@ -189,31 +197,49 @@ gmd({
 });
 
 
-// ─── CLONE : duplique le groupe actuel ───────────────────────────────────────
+// ─── CLONE : duplicate the current group (name, description, picture, members) ─
 gmd({
   pattern: "clone",
+  aliases: ['clonegc', 'clonegroup'],
   react: "🪞",
   category: "group",
-  description: "Clone le groupe actuel",
+  description: "Clone the current group (name, description, picture and members)",
 }, async (from, Prince, conText) => {
   const { reply, react, isGroup, isDevs, groupMetadata, participants } = conText;
 
-  if (!isGroup) return reply("❌ Groupe uniquement.");
-  if (!isDevs)  { await react("❌"); return reply("❌ Cette commande est *réservée au propriétaire absolu*."); }
+  if (!isGroup) return reply("❌ Group only command.");
+  if (!isDevs)  { await react("❌"); return reply("❌ This command is *owner only*."); }
 
   await react("⏳");
-  await reply("🪞 *CLONE en cours...*\n\nCréation du nouveau groupe...");
+  await reply("🪞 *CLONE in progress...*\n\nCreating the new group...");
 
   try {
+    const meta = groupMetadata || (await Prince.groupMetadata(from));
     const botBase = (Prince.user?.id || '').split(':')[0].split('@')[0].replace(/\D/g, '');
     const memberJids = (participants || []).filter(jid => {
       const num = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
       return num !== botBase;
     });
 
-    const newGroup = await Prince.groupCreate(`[CLONE] ${groupMetadata?.subject || 'Group'}`, []);
+    const newName = `[CLONE] ${meta?.subject || 'Group'}`;
+    const newGroup = await Prince.groupCreate(newName, []);
+
+    // Copy description
+    try {
+      if (meta?.desc) await Prince.groupUpdateDescription(newGroup.id, meta.desc);
+    } catch {}
+
+    // Copy profile picture
+    try {
+      const ppUrl = await Prince.profilePictureUrl(from, "image");
+      if (ppUrl) {
+        const res = await axios.get(ppUrl, { responseType: 'arraybuffer', timeout: 15000 });
+        await Prince.updateProfilePicture(newGroup.id, Buffer.from(res.data));
+      }
+    } catch {}
+
     await Prince.sendMessage(from, {
-      text: `✅ Nouveau groupe créé !\n📛 Nom : [CLONE] ${groupMetadata?.subject}\n👥 ${memberJids.length} membres à ajouter`
+      text: `✅ New group created!\n📛 Name: ${newName}\n👥 ${memberJids.length} member(s) to add`
     });
 
     let added = 0, failed = 0;
@@ -227,13 +253,23 @@ gmd({
       await new Promise(r => setTimeout(r, 1500));
     }
 
+    // Send the invite link of the new group
+    let linkLine = "";
+    try {
+      const code = await Prince.groupInviteCode(newGroup.id);
+      linkLine = `\n🔗 Link: https://chat.whatsapp.com/${code}`;
+    } catch {}
+
+    await Prince.sendMessage(newGroup.id, {
+      text: `🪞 *CLONE complete*\n👥 Added: ${added}/${memberJids.length}\n❌ Failed: ${failed}${linkLine}`
+    });
     await Prince.sendMessage(from, {
-      text: `✅ *CLONE terminé*\n👥 Ajoutés : ${added}/${memberJids.length}\n❌ Échecs : ${failed}`
+      text: `✅ *CLONE complete*\n👥 Added: ${added}/${memberJids.length}\n❌ Failed: ${failed}${linkLine}`
     });
     await react("✅");
   } catch (e) {
     await react("❌");
-    await reply(`❌ Erreur clone : ${e.message}`);
+    await reply(`❌ Clone error: ${e.message}`);
   }
 });
 
@@ -298,7 +334,7 @@ function detectDevice(id) {
 
 gmd({
   pattern: "device",
-  aliases: ['appareil', 'dev'],
+  aliases: ['appareil', 'whatdevice'],
   react: "📱",
   category: "tools",
   description: "Detect the WhatsApp device of the person you reply to.",
@@ -821,7 +857,7 @@ gmd({
   const handler = async (event) => {
     try {
       const message = event.messages[0];
-      if (!message?.message || message.key.fromMe) return;
+      if (!message?.message) return;
       if (message.key.remoteJid !== from) return;
 
       const isReply =
@@ -939,5 +975,140 @@ gmd({
   } catch (e) {
     await react("❌");
     await reply(`❌ Scan failed: ${e.message}`);
+  }
+});
+
+
+// ─── SUPPORT : channel + website links ───────────────────────────────────────
+gmd({
+  pattern: "support",
+  aliases: ['contact', 'links', 'official'],
+  react: "💖",
+  category: "general",
+  description: "Get the official channel and website links.",
+}, async (from, Prince, conText) => {
+  const { reply, react, mek, sender, botName, botFooter, newsletterJid } = conText;
+  const cfg = require('../config');
+
+  await react("💖");
+
+  const channel = cfg.NEWSLETTER_URL || "https://whatsapp.com/channel/0029Vark1I1AYlUR1G8YMX31";
+  const site = cfg.YT || "youtube.com/@xhrishost";
+
+  const text =
+    `💖 *${cfg.BOT_NAME || botName} — OFFICIAL SUPPORT*\n\n` +
+    `📢 *Channel:* ${channel}\n` +
+    `🌐 *Website / Channel:* ${site}\n` +
+    `👤 *Owner:* wa.me/${(cfg.OWNER_NUMBER || "").replace(/\D/g, "")}\n\n` +
+    `_Follow the channel for updates and support!_\n\n` +
+    `> ${botFooter || cfg.FOOTER || ""}`;
+
+  await Prince.sendMessage(
+    from,
+    { text, contextInfo: getContextInfo(sender, newsletterJid, botName) },
+    { quoted: mek },
+  );
+  await react("✅");
+});
+
+
+// ─── STALK : GitHub user lookup ──────────────────────────────────────────────
+gmd({
+  pattern: "githubstalk",
+  aliases: ['gitstalk', 'ghstalk'],
+  react: "🔍",
+  category: "stalk",
+  description: "Stalk a GitHub user profile.",
+}, async (from, Prince, conText) => {
+  const { q, reply, react, mek, sender, botName, newsletterJid } = conText;
+
+  if (!q || !q.trim()) {
+    await react("❌");
+    return reply("❌ Please provide a GitHub username.\n\n*Example:* .githubstalk torvalds");
+  }
+
+  await react("⏳");
+  try {
+    const user = q.trim().replace(/.*github\.com\//, "").split("/")[0];
+    const { data } = await axios.get(`https://api.github.com/users/${encodeURIComponent(user)}`, {
+      headers: { "User-Agent": "XHRIS-MD-V2" },
+      timeout: 20000,
+    });
+
+    const caption =
+      `🐙 *GITHUB STALK*\n\n` +
+      `👤 *Name:* ${data.name || "N/A"}\n` +
+      `🔖 *Username:* ${data.login}\n` +
+      `📝 *Bio:* ${data.bio || "N/A"}\n` +
+      `📦 *Repos:* ${data.public_repos}\n` +
+      `👥 *Followers:* ${data.followers} | *Following:* ${data.following}\n` +
+      `🏢 *Company:* ${data.company || "N/A"}\n` +
+      `📍 *Location:* ${data.location || "N/A"}\n` +
+      `🔗 *Profile:* ${data.html_url}\n` +
+      `📅 *Joined:* ${new Date(data.created_at).toLocaleDateString()}`;
+
+    await Prince.sendMessage(
+      from,
+      {
+        image: { url: data.avatar_url },
+        caption,
+        contextInfo: getContextInfo(sender, newsletterJid, botName),
+      },
+      { quoted: mek },
+    );
+    await react("✅");
+  } catch (e) {
+    await react("❌");
+    if (e.response?.status === 404) return reply("❌ GitHub user not found.");
+    await reply(`❌ Error: ${e.message}`);
+  }
+});
+
+
+// ─── STALK : npm package lookup ──────────────────────────────────────────────
+gmd({
+  pattern: "npmstalk",
+  aliases: ['npmsearch', 'pkgstalk'],
+  react: "📦",
+  category: "stalk",
+  description: "Stalk / look up an npm package.",
+}, async (from, Prince, conText) => {
+  const { q, reply, react, mek, sender, botName, newsletterJid } = conText;
+
+  if (!q || !q.trim()) {
+    await react("❌");
+    return reply("❌ Please provide an npm package name.\n\n*Example:* .npmstalk express");
+  }
+
+  await react("⏳");
+  try {
+    const pkg = q.trim().toLowerCase();
+    const { data } = await axios.get(`https://registry.npmjs.org/${encodeURIComponent(pkg)}`, {
+      timeout: 20000,
+    });
+
+    const latest = data["dist-tags"]?.latest;
+    const v = data.versions?.[latest] || {};
+    const caption =
+      `📦 *NPM STALK*\n\n` +
+      `🔖 *Name:* ${data.name}\n` +
+      `🏷️ *Latest:* ${latest || "N/A"}\n` +
+      `📝 *Description:* ${data.description || "N/A"}\n` +
+      `👤 *Author:* ${(data.author && (data.author.name || data.author)) || "N/A"}\n` +
+      `📜 *License:* ${v.license || data.license || "N/A"}\n` +
+      `🏠 *Homepage:* ${data.homepage || "N/A"}\n` +
+      `🔗 *npm:* https://www.npmjs.com/package/${data.name}\n` +
+      `🏷️ *Keywords:* ${(data.keywords || []).slice(0, 8).join(", ") || "N/A"}`;
+
+    await Prince.sendMessage(
+      from,
+      { text: caption, contextInfo: getContextInfo(sender, newsletterJid, botName) },
+      { quoted: mek },
+    );
+    await react("✅");
+  } catch (e) {
+    await react("❌");
+    if (e.response?.status === 404) return reply("❌ npm package not found.");
+    await reply(`❌ Error: ${e.message}`);
   }
 });

@@ -16,7 +16,7 @@ gmd(
     pattern: "gitclone",
     category: "downloader",
     react: "📦",
-    aliases: ["gitdl", "github", "git", "repodl", "clone"],
+    aliases: ["gitdl", "github", "git", "repodl"],
     description: "Download GitHub repository as zip file",
   },
   async (from, Prince, conText) => {

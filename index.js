@@ -395,6 +395,60 @@ async function startPrince() {
                 }
             });
 
+        // ============ MENTION AUTO-REPLY ============
+        Prince.ev.on("messages.upsert", async ({ messages }) => {
+            try {
+                const message = messages[0];
+                if (!message?.message || message.key.fromMe) return;
+                if (message.key.remoteJid === "status@broadcast") return;
+
+                if (getSetting("MENTION_REPLY", "off") !== "on") return;
+
+                const ctx =
+                    message.message?.extendedTextMessage?.contextInfo ||
+                    message.message?.imageMessage?.contextInfo ||
+                    message.message?.videoMessage?.contextInfo;
+                const mentioned = ctx?.mentionedJid || [];
+                if (!mentioned.length) return;
+
+                const botBase = (Prince.user?.id || "").split(":")[0].split("@")[0];
+                const botLid = (Prince.user?.lid || "").split(":")[0].split("@")[0];
+                const isBotMentioned = mentioned.some((j) => {
+                    const base = String(j).split("@")[0].split(":")[0];
+                    return base === botBase || base === botLid;
+                });
+                if (!isBotMentioned) return;
+
+                const replyText = getSetting(
+                    "MENTION_REPLY_TEXT",
+                    "👋 Hello! Thanks for tagging me. The owner will get back to you soon.",
+                );
+                const replyTo =
+                    message.key.senderPn ||
+                    message.key.participantPn ||
+                    message.key.participant ||
+                    message.key.remoteJid;
+
+                await Prince.sendMessage(
+                    message.key.remoteJid,
+                    {
+                        text: replyText,
+                        mentions: [replyTo],
+                        contextInfo: {
+                            mentionedJid: [replyTo],
+                            ...createContext(replyTo, {
+                                title: getSetting("BOT_NAME", botName),
+                                body: "Mention Auto-Reply",
+                            }).contextInfo,
+                        },
+                    },
+                    { quoted: message },
+                );
+            } catch (err) {
+                console.error("Mention auto-reply error:", err);
+            }
+        });
+
         Prince.ev.on("messages.upsert", async (mek) => {
             try {
                 mek = mek.messages[0];

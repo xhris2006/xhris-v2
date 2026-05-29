@@ -305,7 +305,7 @@ _Or use directly:_
 
   const handler = async (event) => {
     const messageData = event.messages[0];
-    if (!messageData?.message || messageData.key.fromMe) return;
+    if (!messageData?.message) return;
     if (messageData.key.remoteJid !== chatId) return;
 
     const isReply =
@@ -460,10 +460,10 @@ gmd({
     if (contextInfo && contextInfo.stanzaId) {
       return {
         remoteJid: from,
-        // In DM the replied message has no participant; fromMe depends on who sent it.
+        // In DM you can only unsend your own (bot) messages, so target fromMe.
         fromMe: isGroup
           ? (contextInfo.participant === botId || contextInfo.participant === Prince.user?.id)
-          : !contextInfo.participant,
+          : true,
         id: contextInfo.stanzaId,
         participant: isGroup ? contextInfo.participant : undefined
       };
@@ -481,15 +481,10 @@ gmd({
   try {
     const isBotMessage = key.fromMe;
 
-    if (isGroup) {
-      if (!isBotMessage && !isBotAdmin) {
-        return reply(
-          "❌ Bot needs admin rights to delete others' messages in groups!",
-        );
-      }
-    } else if (!isBotMessage) {
-      // In a private chat, WhatsApp only lets you unsend your own messages.
-      return reply("❌ In DM I can only delete my own messages.");
+    if (isGroup && !isBotMessage && !isBotAdmin) {
+      return reply(
+        "❌ Bot needs admin rights to delete others' messages in groups!",
+      );
     }
 
     await Prince.sendMessage(from, { delete: key });
@@ -501,7 +496,7 @@ gmd({
   }
 });
 
-function resolveBlockTarget(conText, from) {
+async function resolveBlockTarget(conText, from, Prince) {
   const { mentionedJid, quotedUser, q } = conText;
   let target = (mentionedJid && mentionedJid[0]) || quotedUser || null;
   if (!target && q) {
@@ -510,6 +505,18 @@ function resolveBlockTarget(conText, from) {
   }
   // In a private chat with no explicit target, act on the current chat
   if (!target && !from.endsWith("@g.us")) target = from;
+  if (!target) return null;
+
+  // Resolve LID -> real JID when possible (group replies can return @lid)
+  if (target.endsWith("@lid") && Prince.getJidFromLid) {
+    try {
+      const resolved = await Prince.getJidFromLid(target);
+      if (resolved) target = resolved;
+    } catch (e) {}
+  }
+
+  // Normalize to a phone-number JID
+  if (!target.includes("@")) target = target + "@s.whatsapp.net";
   return target;
 }
 
@@ -523,8 +530,8 @@ gmd({
 
   if (!isSuperUser) return reply("❌ Owner Only Command!");
 
-  const target = resolveBlockTarget(conText, from);
-  if (!target || target.endsWith("@g.us")) {
+  const target = await resolveBlockTarget(conText, from, Prince);
+  if (!target || target.endsWith("@g.us") || target.endsWith("@lid")) {
     await react("❌");
     return reply("❌ Reply to, mention, or provide the number of the user to block.\n\n*Example:* .block 254712345678");
   }
@@ -557,8 +564,8 @@ gmd({
 
   if (!isSuperUser) return reply("❌ Owner Only Command!");
 
-  const target = resolveBlockTarget(conText, from);
-  if (!target || target.endsWith("@g.us")) {
+  const target = await resolveBlockTarget(conText, from, Prince);
+  if (!target || target.endsWith("@g.us") || target.endsWith("@lid")) {
     await react("❌");
     return reply("❌ Reply to, mention, or provide the number of the user to unblock.\n\n*Example:* .unblock 254712345678");
   }
@@ -579,6 +586,55 @@ gmd({
     await react("❌");
     return reply(`❌ Failed to unblock user: ${error.message}`);
   }
+});
+
+gmd({
+  pattern: "mention",
+  aliases: ["setmention", "mentionreply"],
+  category: "owner",
+  react: "💬",
+  description: "Configure an auto-reply triggered when the bot is mentioned/tagged.",
+}, async (from, Prince, conText) => {
+  const { reply, react, isSuperUser, q, getSetting, setSetting } = conText;
+
+  if (!isSuperUser) return reply("❌ Owner Only Command!");
+
+  const input = (q || "").trim();
+  const cur = getSetting("MENTION_REPLY", "off");
+  const curText = getSetting("MENTION_REPLY_TEXT", "👋 Hello! Thanks for tagging me. The owner will get back to you soon.");
+
+  if (!input) {
+    return reply(
+      `💬 *MENTION AUTO-REPLY*\n\n` +
+      `📊 Status: ${cur === "on" ? "✅ ON" : "❌ OFF"}\n` +
+      `📝 Text: ${curText}\n\n` +
+      `*Usage:*\n` +
+      `.mention on — enable\n` +
+      `.mention off — disable\n` +
+      `.mention set <text> — set the reply text (also enables it)`
+    );
+  }
+
+  const lower = input.toLowerCase();
+
+  if (lower === "on" || lower === "true" || lower === "enable") {
+    setSetting("MENTION_REPLY", "on");
+    await react("✅");
+    return reply("✅ Mention auto-reply is now *ON*.");
+  }
+  if (lower === "off" || lower === "false" || lower === "disable") {
+    setSetting("MENTION_REPLY", "off");
+    await react("✅");
+    return reply("❎ Mention auto-reply is now *OFF*.");
+  }
+
+  const text = lower.startsWith("set ") ? input.slice(4).trim() : input;
+  if (!text) return reply("❌ Please provide the reply text.\n\n*Example:* .mention set Hi, I'll reply soon!");
+
+  setSetting("MENTION_REPLY_TEXT", text);
+  setSetting("MENTION_REPLY", "on");
+  await react("✅");
+  return reply(`✅ Mention auto-reply text set and *enabled*:\n\n${text}`);
 });
 
 gmd({
