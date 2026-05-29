@@ -128,7 +128,7 @@ gmd(
       actionMap[String(optNum)] = "audio";
 
       const menuMsg = {
-        image: { url: thumbnail || botPic },
+        image: { url: botPic },
         caption: `> *${botName} FACEBOOK DOWNLOADER*
 ╭───────────────◆
 │⿻ *Title:* ${title || "Facebook Video"}
@@ -300,7 +300,7 @@ gmd(
       const { title, video, music, cover, author } = result;
 
       const menuMsg = {
-        image: { url: cover || botPic },
+        image: { url: botPic },
         caption: `> *${botName} TIKTOK DOWNLOADER*
 ╭───────────────◆
 │⿻ *Title:* ${title || "TikTok Video"}
@@ -452,7 +452,7 @@ gmd(
       actionMap[String(optNum)] = { type: "audio" };
 
       const menuMsg = {
-        image: { url: thumbnail || botPic },
+        image: { url: botPic },
         caption: `> *${botName} TWITTER DOWNLOADER*
 ╭───────────────◆
 │⿻ *Qualities:* ${videoUrls.map((v) => v.quality).join(", ")}
@@ -593,7 +593,7 @@ gmd(
       }
 
       const menuMsg = {
-        image: { url: thumbnail || botPic },
+        image: { url: botPic },
         caption: `> *${botName} INSTAGRAM DOWNLOADER*
 ╭───────────────◆
 │⿻ *Platform:* Instagram
@@ -723,7 +723,7 @@ gmd(
       }
 
       const menuMsg = {
-        image: { url: thumbnail || botPic },
+        image: { url: botPic },
         caption: `> *${botName} SNACK VIDEO DOWNLOADER*
 ╭───────────────◆
 │⿻ *Title:* ${title || "Snack Video"}

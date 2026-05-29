@@ -128,9 +128,27 @@ const PrincePresence = async (Prince, jid) => {
 };
 
 const PrinceAnticall = async (json, Prince) => {
+    // Read the persisted ANTICALL setting (falls back to config). When it is
+    // disabled, the bot must NOT auto-reject incoming calls.
+    const mode = String(getSetting('ANTICALL', config.ANTICALL || 'false')).toLowerCase();
+    if (mode === 'false' || mode === 'off' || mode === '' || mode === 'no') return;
+
     for (const id of json) {
-        if (id.status === 'offer') {
+        if (id.status !== 'offer') continue;
+        try {
             await Prince.rejectCall(id.id, id.from);
+
+            try {
+                await Prince.sendMessage(id.from, {
+                    text: antiCallMsg || '*_📞 Auto Call Reject Mode Active. 📵 No Calls Allowed!_*',
+                });
+            } catch (e) {}
+
+            if (mode === 'block') {
+                try { await Prince.updateBlockStatus(id.from, 'block'); } catch (e) {}
+            }
+        } catch (e) {
+            console.error('Anticall error:', e);
         }
     }
 };

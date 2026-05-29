@@ -243,72 +243,94 @@ gmd({
   aliases: ["setanticall"],
   category: "owner",
   react: "📵",
-  description: "Enable/Disable Anti-Call Feature",
+  description: "Enable/Disable the Anti-Call feature (on/off/block).",
 }, async (from, Prince, conText) => {
-  const { isSuperUser, reply, react, from: chatId, mek } = conText;
+  const { isSuperUser, reply, react, q, from: chatId, mek, sender, newsletterJid, botName, getSetting, setSetting } = conText;
 
-  if (!isSuperUser) return reply("❌ *Super User Only Command*");
+  if (!isSuperUser) return reply("❌ *Owner Only Command*");
 
-  const imageUrl = config.BOT_PIC && config.BOT_PIC !== "" 
-    ? config.BOT_PIC 
-    : "https://i.ibb.co/8KzX3M3/botlogo.jpg"; // fallback
+  const current = String(getSetting("ANTICALL", config.ANTICALL || "false")).toLowerCase();
+  const input = (q || "").trim().toLowerCase();
+
+  const applyMode = async (mode) => {
+    setSetting("ANTICALL", mode);
+    await react("✅");
+    if (mode === "false")
+      return reply("❎ *Anticall disabled.* The bot will no longer reject incoming calls.");
+    if (mode === "block")
+      return reply("✅ *Anticall enabled.* Incoming calls will be declined and the caller blocked.");
+    return reply("✅ *Anticall enabled.* Incoming calls will be declined automatically.");
+  };
+
+  // Direct usage: .anticall on/off/decline/block
+  if (["on", "true", "decline", "1"].includes(input)) return applyMode("decline");
+  if (["off", "false", "disable", "no", "3"].includes(input)) return applyMode("false");
+  if (["block", "2"].includes(input)) return applyMode("block");
+
+  // Interactive menu
+  const imageUrl = config.BOT_PIC && config.BOT_PIC !== ""
+    ? config.BOT_PIC
+    : "https://i.ibb.co/8KzX3M3/botlogo.jpg";
+
+  const statusText =
+    current === "false"
+      ? "❌ Off"
+      : current === "block"
+        ? "✅ Decline & Block"
+        : "✅ Decline";
 
   const infoMess = {
     image: { url: imageUrl },
-    caption: `> *${config.BOT_NAME} 𝐀𝐍𝐓𝐈𝐂𝐀𝐋𝐋 𝐒𝐄𝐓𝐓𝐈𝐍𝐆𝐒*  
+    caption: `*${config.BOT_NAME} ANTICALL SETTINGS*
+
+📊 Current status: *${statusText}*
 
 Reply With:
 
-*1.* Decline Calls  
-*2.* Decline & Block Callers  
-*3.* Disable Anticall  
+*1.* Decline Calls
+*2.* Decline & Block Callers
+*3.* Disable Anticall
 
-╭────────────────◆  
-│ ${config.FOOTER}  
+_Or use directly:_
+*.anticall on/off/block*
+
+╭────────────────◆
+│ ${config.FOOTER}
 ╰─────────────────◆`,
-    contextInfo: getContextInfo(conText.sender, conText.newsletterJid, conText.botName),
+    contextInfo: getContextInfo(sender, newsletterJid, botName),
   };
 
   const sentMsg = await Prince.sendMessage(chatId, infoMess, { quoted: mek });
   const messageId = sentMsg.key.id;
 
-  Prince.ev.on("messages.upsert", async (event) => {
+  const handler = async (event) => {
     const messageData = event.messages[0];
-    if (!messageData?.message) return;
-
-    const messageContent =
-      messageData.message.conversation ||
-      messageData.message.extendedTextMessage?.text;
+    if (!messageData?.message || messageData.key.fromMe) return;
+    if (messageData.key.remoteJid !== chatId) return;
 
     const isReply =
-      messageData.message.extendedTextMessage?.contextInfo?.stanzaId ===
-      messageId;
+      messageData.message.extendedTextMessage?.contextInfo?.stanzaId === messageId;
+    if (!isReply) return;
 
-    if (isReply) {
-      await react("📵");
-      switch (messageContent) {
-        case "1":
-          config.ANTICALL = "decline";
-          saveConfig();
-          return reply("✅ Anticall enabled. Calls will be declined.");
+    const choice = (
+      messageData.message.conversation ||
+      messageData.message.extendedTextMessage?.text ||
+      ""
+    ).trim();
 
-        case "2":
-          config.ANTICALL = "block";
-          saveConfig();
-          return reply("✅ Anticall set to decline & block callers.");
+    let mode = "";
+    if (choice === "1") mode = "decline";
+    else if (choice === "2") mode = "block";
+    else if (choice === "3") mode = "false";
 
-        case "3":
-          config.ANTICALL = "false";
-          saveConfig();
-          return reply("❎ Anticall disabled.");
-
-        default:
-          await Prince.sendMessage(chatId, {
-            text: "⚠️ Invalid option. Please reply with 1, 2, or 3.",
-          });
-      }
+    if (mode) {
+      Prince.ev.off("messages.upsert", handler);
+      await applyMode(mode);
     }
-  });
+  };
+
+  Prince.ev.on("messages.upsert", handler);
+  setTimeout(() => Prince.ev.off("messages.upsert", handler), 60000);
 
   await react("✅");
 });
@@ -406,11 +428,15 @@ gmd({
     ms
   } = conText;
 
-  if (!isGroup) return reply("❌ This command only works in groups!");
-  if (!isSuperUser && !isAdmin) return reply("❌ Admin/Owner Only Command!");
+  // Works in groups (admins/owner) and in DM (owner can delete the bot's own messages)
+  if (isGroup) {
+    if (!isSuperUser && !isAdmin) return reply("❌ Admin/Owner Only Command!");
+  } else {
+    if (!isSuperUser) return reply("❌ Owner Only Command!");
+  }
 
   const botId = conText.botId || (Prince.user?.id ? Prince.user.id.split(":")[0] + "@s.whatsapp.net" : "");
-  
+
   // High-reliability key extraction
   const getMessageKey = () => {
     // 1. From conText.quoted (helper populated)
@@ -422,10 +448,10 @@ gmd({
         participant: conText.quoted.sender || (conText.quoted.key && conText.quoted.key.participant)
       };
     }
-    
+
     // 2. From raw message structure (ms.message)
-    const contextInfo = ms.message?.extendedTextMessage?.contextInfo || 
-                        ms.message?.imageMessage?.contextInfo || 
+    const contextInfo = ms.message?.extendedTextMessage?.contextInfo ||
+                        ms.message?.imageMessage?.contextInfo ||
                         ms.message?.videoMessage?.contextInfo ||
                         ms.message?.documentWithCaptionMessage?.message?.documentMessage?.contextInfo ||
                         ms.message?.viewOnceMessage?.message?.imageMessage?.contextInfo ||
@@ -434,12 +460,15 @@ gmd({
     if (contextInfo && contextInfo.stanzaId) {
       return {
         remoteJid: from,
-        fromMe: contextInfo.participant === botId || contextInfo.participant === Prince.user?.id,
+        // In DM the replied message has no participant; fromMe depends on who sent it.
+        fromMe: isGroup
+          ? (contextInfo.participant === botId || contextInfo.participant === Prince.user?.id)
+          : !contextInfo.participant,
         id: contextInfo.stanzaId,
-        participant: contextInfo.participant
+        participant: isGroup ? contextInfo.participant : undefined
       };
     }
-    
+
     return null;
   };
 
@@ -452,10 +481,15 @@ gmd({
   try {
     const isBotMessage = key.fromMe;
 
-    if (!isBotMessage && !isBotAdmin) {
-      return reply(
-        "❌ Bot needs admin rights to delete others' messages in groups!",
-      );
+    if (isGroup) {
+      if (!isBotMessage && !isBotAdmin) {
+        return reply(
+          "❌ Bot needs admin rights to delete others' messages in groups!",
+        );
+      }
+    } else if (!isBotMessage) {
+      // In a private chat, WhatsApp only lets you unsend your own messages.
+      return reply("❌ In DM I can only delete my own messages.");
     }
 
     await Prince.sendMessage(from, { delete: key });
@@ -464,6 +498,86 @@ gmd({
     console.error("Delete error details:", error);
     await react("❌");
     return reply(`❌ Failed to delete message: ${error.message}`);
+  }
+});
+
+function resolveBlockTarget(conText, from) {
+  const { mentionedJid, quotedUser, q } = conText;
+  let target = (mentionedJid && mentionedJid[0]) || quotedUser || null;
+  if (!target && q) {
+    const num = q.replace(/[^0-9]/g, "");
+    if (num.length >= 8) target = num + "@s.whatsapp.net";
+  }
+  // In a private chat with no explicit target, act on the current chat
+  if (!target && !from.endsWith("@g.us")) target = from;
+  return target;
+}
+
+gmd({
+  pattern: "block",
+  react: "🚫",
+  category: "owner",
+  description: "Block a user (reply, mention, number, or in their DM).",
+}, async (from, Prince, conText) => {
+  const { reply, react, isSuperUser, mek, sender, botName, newsletterJid } = conText;
+
+  if (!isSuperUser) return reply("❌ Owner Only Command!");
+
+  const target = resolveBlockTarget(conText, from);
+  if (!target || target.endsWith("@g.us")) {
+    await react("❌");
+    return reply("❌ Reply to, mention, or provide the number of the user to block.\n\n*Example:* .block 254712345678");
+  }
+
+  try {
+    await Prince.updateBlockStatus(target, "block");
+    await react("✅");
+    await Prince.sendMessage(
+      from,
+      {
+        text: `🚫 Successfully blocked @${target.split("@")[0]}.`,
+        mentions: [target],
+        contextInfo: { mentionedJid: [target], ...getContextInfo(target, newsletterJid, botName) },
+      },
+      { quoted: mek },
+    );
+  } catch (error) {
+    await react("❌");
+    return reply(`❌ Failed to block user: ${error.message}`);
+  }
+});
+
+gmd({
+  pattern: "unblock",
+  react: "✅",
+  category: "owner",
+  description: "Unblock a user (reply, mention, number, or in their DM).",
+}, async (from, Prince, conText) => {
+  const { reply, react, isSuperUser, mek, sender, botName, newsletterJid } = conText;
+
+  if (!isSuperUser) return reply("❌ Owner Only Command!");
+
+  const target = resolveBlockTarget(conText, from);
+  if (!target || target.endsWith("@g.us")) {
+    await react("❌");
+    return reply("❌ Reply to, mention, or provide the number of the user to unblock.\n\n*Example:* .unblock 254712345678");
+  }
+
+  try {
+    await Prince.updateBlockStatus(target, "unblock");
+    await react("✅");
+    await Prince.sendMessage(
+      from,
+      {
+        text: `✅ Successfully unblocked @${target.split("@")[0]}.`,
+        mentions: [target],
+        contextInfo: { mentionedJid: [target], ...getContextInfo(target, newsletterJid, botName) },
+      },
+      { quoted: mek },
+    );
+  } catch (error) {
+    await react("❌");
+    return reply(`❌ Failed to unblock user: ${error.message}`);
   }
 });
 
@@ -1518,77 +1632,81 @@ gmd({
     return reply(`Owner Only Command!`);
   }
 
-  // Si pas de quoted user, utiliser le sender lui-même
-  let targetUser = quotedUser || sender;
+  // Use the replied/mentioned user when available, otherwise the sender.
+  let targetUser = quotedUser || conText.user || sender;
 
   if (!targetUser) {
     await react("❌");
-    return reply(`❌ Cible introuvable. Réponds à un message ou tape la commande en privé.`);
+    return reply(`❌ Target not found. Reply to a message, mention a user, or run the command in a private chat.`);
   }
 
   let profilePictureUrl;
   let statusText = "Not Found";
   let setAt = "Not Available";
-  
+
   try {
-    if (quoted) {
-      if (isGroup && !targetUser.endsWith('@s.whatsapp.net')) {
-        try {
-          const jid = await Prince.getJidFromLid(targetUser);
-          if (jid) targetUser = jid;
-        } catch (error) {
-          console.error("Error converting LID to JID:", error);
-        }
-      }
-
+    if (isGroup && targetUser.endsWith('@lid')) {
       try {
-        profilePictureUrl = await Prince.profilePictureUrl(targetUser, "image");
+        const jid = await Prince.getJidFromLid(targetUser);
+        if (jid) targetUser = jid;
       } catch (error) {
-        console.error("Error fetching profile picture:", error);
-        profilePictureUrl = "https://telegra.ph/file/9521e9ee2fdbd0d6f4f1c.jpg";
+        console.error("Error converting LID to JID:", error);
       }
-
-      try {
-        const statusData = await Prince.fetchStatus(targetUser);
-        console.log("Status Data:", statusData);
-        
-        if (statusData && statusData.length > 0 && statusData[0].status) {
-          statusText = statusData[0].status.status || "Not Found";
-          setAt = statusData[0].status.setAt || "Not Available";
-        }
-      } catch (error) {
-        console.error("Error fetching status:", error);
-      }
-
-      let formattedDate = "Not Available";
-      if (setAt && setAt !== "Not Available") {
-        try {
-          formattedDate = moment(setAt)
-            .tz(timeZone)
-            .format('dddd, MMMM Do YYYY, h:mm A z');
-        } catch (e) {
-          console.error("Error formatting date:", e);
-        }
-      }
-
-      const number = targetUser.replace(/@s\.whatsapp\.net$/, "");
-
-      await Prince.sendMessage(
-        from,
-        {
-          image: { url: profilePictureUrl },
-          caption: `*👤 User Profile Information*\n\n` +
-                   `*• Name:* @${number}\n` +
-                   `*• Number:* ${number}\n` +
-                   `*• About:* ${statusText}\n` +
-                   `*• Last Updated:* ${formattedDate}\n\n` +
-                   `_${botFooter}_`,
-          contextInfo: getContextInfo(targetUser, conText.newsletterJid, conText.botName),
-        },
-        { quoted: mek }
-      );
-      await react("✅");
     }
+
+    try {
+      profilePictureUrl = await Prince.profilePictureUrl(targetUser, "image");
+    } catch (error) {
+      console.error("Error fetching profile picture:", error);
+      profilePictureUrl = "https://telegra.ph/file/9521e9ee2fdbd0d6f4f1c.jpg";
+    }
+
+    try {
+      const statusData = await Prince.fetchStatus(targetUser);
+
+      if (statusData && statusData.length > 0 && statusData[0].status) {
+        statusText = statusData[0].status.status || "Not Found";
+        setAt = statusData[0].status.setAt || "Not Available";
+      } else if (statusData?.status) {
+        statusText = statusData.status || "Not Found";
+        setAt = statusData.setAt || "Not Available";
+      }
+    } catch (error) {
+      console.error("Error fetching status:", error);
+    }
+
+    let formattedDate = "Not Available";
+    if (setAt && setAt !== "Not Available") {
+      try {
+        formattedDate = moment(setAt)
+          .tz(timeZone)
+          .format('dddd, MMMM Do YYYY, h:mm A z');
+      } catch (e) {
+        console.error("Error formatting date:", e);
+      }
+    }
+
+    const number = targetUser.replace(/@s\.whatsapp\.net$/, "").replace(/@lid$/, "");
+
+    await Prince.sendMessage(
+      from,
+      {
+        image: { url: profilePictureUrl },
+        caption: `*👤 User Profile Information*\n\n` +
+                 `*• Name:* @${number}\n` +
+                 `*• Number:* ${number}\n` +
+                 `*• About:* ${statusText}\n` +
+                 `*• Last Updated:* ${formattedDate}\n\n` +
+                 `_${botFooter}_`,
+        mentions: [targetUser],
+        contextInfo: {
+          mentionedJid: [targetUser],
+          ...getContextInfo(targetUser, conText.newsletterJid, conText.botName),
+        },
+      },
+      { quoted: mek }
+    );
+    await react("✅");
   } catch (error) {
     console.error("Error in whois command:", error);
     await reply(`❌ An error occurred while fetching profile information.\nError: ${error.message}`);

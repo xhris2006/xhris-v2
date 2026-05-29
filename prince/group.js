@@ -1983,3 +1983,338 @@ gmd(
     return reply(`✅ Anti-Promote is now ${action === "on" ? "ON" : "OFF"} for this group.`);
   },
 );
+
+gmd(
+  {
+    pattern: "join",
+    aliases: ["joingc", "joingroup"],
+    react: "📥",
+    category: "group",
+    description:
+      "Join a group via its invite link. Provide the link or reply to a message containing it. Owner only.",
+  },
+  async (from, Prince, conText) => {
+    const {
+      reply,
+      react,
+      q,
+      isSuperUser,
+      quotedMsg,
+      mek,
+      sender,
+      botName,
+      newsletterJid,
+    } = conText;
+
+    if (!isSuperUser) return reply("❌ Owner Only Command!");
+
+    // Collect the link text from the argument or from the replied message
+    let text = (q || "").trim();
+    if (!text && quotedMsg) {
+      text =
+        quotedMsg.conversation ||
+        quotedMsg.extendedTextMessage?.text ||
+        quotedMsg.imageMessage?.caption ||
+        quotedMsg.videoMessage?.caption ||
+        "";
+    }
+
+    const match = text.match(/chat\.whatsapp\.com\/([0-9A-Za-z]+)/);
+    if (!match) {
+      await react("❌");
+      return reply(
+        "❌ Please provide a valid WhatsApp group invite link, or reply to a message that contains one.\n\n*Example:* .join https://chat.whatsapp.com/XXXXXXXXXXX",
+      );
+    }
+
+    const inviteCode = match[1];
+
+    try {
+      const groupJid = await Prince.groupAcceptInvite(inviteCode);
+
+      let groupName = "";
+      try {
+        const meta = await Prince.groupMetadata(groupJid);
+        groupName = meta?.subject || "";
+      } catch (e) {}
+
+      await Prince.sendMessage(
+        from,
+        {
+          text: `✅ *Joined Successfully!*\n\n${groupName ? `📛 *Group:* ${groupName}\n` : ""}🆔 *ID:* ${groupJid}`,
+          contextInfo: getContextInfo(sender, newsletterJid, botName),
+        },
+        { quoted: mek },
+      );
+      await react("✅");
+    } catch (error) {
+      await react("❌");
+      return reply(
+        `❌ Failed to join the group: ${error.message}\n\n_The link may be invalid, revoked, or the bot was previously removed/banned from the group._`,
+      );
+    }
+  },
+);
+
+gmd(
+  {
+    pattern: "promoteall",
+    aliases: ["promoteeveryone"],
+    react: "👑",
+    category: "group",
+    description: "Promote all non-admin members to admin.",
+  },
+  async (from, Prince, conText) => {
+    const {
+      reply,
+      react,
+      isGroup,
+      isBotAdmin,
+      isAdmin,
+      isSuperAdmin,
+      isSuperUser,
+      mek,
+      sender,
+      botName,
+      newsletterJid,
+    } = conText;
+
+    if (!isGroup) return reply("❌ This command only works in groups!");
+    if (!isBotAdmin) return reply("❌ Bot is not an admin in this group!");
+    if (!isAdmin && !isSuperAdmin && !isSuperUser)
+      return reply("❌ You must be an admin to use this command!");
+
+    try {
+      const meta = await Prince.groupMetadata(from);
+      const targets = meta.participants
+        .filter((p) => !p.admin)
+        .map((p) => p.id);
+
+      if (targets.length === 0) {
+        await react("✅");
+        return reply("✅ Everyone in this group is already an admin.");
+      }
+
+      await Prince.groupParticipantsUpdate(from, targets, "promote");
+      await react("✅");
+      await Prince.sendMessage(
+        from,
+        {
+          text: `👑 *Promote All*\n\nSuccessfully promoted *${targets.length}* member(s) to admin.`,
+          contextInfo: getContextInfo(sender, newsletterJid, botName),
+        },
+        { quoted: mek },
+      );
+    } catch (error) {
+      await react("❌");
+      return reply(`❌ Failed to promote all: ${error.message}`);
+    }
+  },
+);
+
+gmd(
+  {
+    pattern: "demoteall",
+    aliases: ["demoteeveryone"],
+    react: "👑",
+    category: "group",
+    description: "Demote all admins (except the group owner and superusers).",
+  },
+  async (from, Prince, conText) => {
+    const {
+      reply,
+      react,
+      isGroup,
+      isBotAdmin,
+      isAdmin,
+      isSuperAdmin,
+      isSuperUser,
+      superUser,
+      mek,
+      sender,
+      botName,
+      newsletterJid,
+    } = conText;
+
+    if (!isGroup) return reply("❌ This command only works in groups!");
+    if (!isBotAdmin) return reply("❌ Bot is not an admin in this group!");
+    if (!isAdmin && !isSuperAdmin && !isSuperUser)
+      return reply("❌ You must be an admin to use this command!");
+
+    try {
+      const meta = await Prince.groupMetadata(from);
+      const botNum = (Prince.user?.id || "").split(":")[0];
+      const sudoNums = (superUser || []).map((u) => u.split("@")[0]);
+
+      const targets = meta.participants
+        .filter((p) => p.admin === "admin") // skip superadmin (group owner)
+        .filter((p) => {
+          const num = (p.pn || p.phoneNumber || p.id || "").split("@")[0];
+          return num !== botNum && !sudoNums.includes(num);
+        })
+        .map((p) => p.id);
+
+      if (targets.length === 0) {
+        await react("✅");
+        return reply("✅ There are no admins to demote.");
+      }
+
+      await Prince.groupParticipantsUpdate(from, targets, "demote");
+      await react("✅");
+      await Prince.sendMessage(
+        from,
+        {
+          text: `👑 *Demote All*\n\nSuccessfully demoted *${targets.length}* admin(s).`,
+          contextInfo: getContextInfo(sender, newsletterJid, botName),
+        },
+        { quoted: mek },
+      );
+    } catch (error) {
+      await react("❌");
+      return reply(`❌ Failed to demote all: ${error.message}`);
+    }
+  },
+);
+
+gmd(
+  {
+    pattern: "groupset",
+    aliases: ["gcset", "setgroup"],
+    react: "⚙️",
+    category: "group",
+    description:
+      "Set group profile picture, name, description or permissions via an interactive menu.",
+  },
+  async (from, Prince, conText) => {
+    const {
+      reply,
+      react,
+      isGroup,
+      isBotAdmin,
+      isAdmin,
+      isSuperAdmin,
+      mek,
+      sender,
+      botName,
+      botPic,
+      newsletterJid,
+    } = conText;
+    const { downloadMediaMessage } = require("prince-baileys");
+
+    if (!isGroup) return reply("❌ This command only works in groups!");
+    if (!isBotAdmin) return reply("❌ Bot is not an admin in this group!");
+    if (!isAdmin && !isSuperAdmin)
+      return reply("❌ You must be an admin to use this command!");
+
+    const menuText = `*${botName} GROUP SETTINGS*
+
+Reply to this message with a number to choose what to set:
+
+*1.* Group Profile Picture _(reply with an image + caption "1")_
+*2.* Group Name _(e.g. "2 My New Group")_
+*3.* Group Description _(e.g. "3 New description here")_
+*4.* Permissions _(e.g. "4 lock" or "4 unlock")_
+
+_"lock" = only admins can send messages, "unlock" = everyone can send._
+
+╭────────────────◆
+│ ${botName}
+╰─────────────────◆`;
+
+    const sentMsg = await Prince.sendMessage(
+      from,
+      {
+        image: { url: botPic },
+        caption: menuText,
+        contextInfo: getContextInfo(sender, newsletterJid, botName),
+      },
+      { quoted: mek },
+    );
+
+    const handler = async (event) => {
+      try {
+        const message = event.messages[0];
+        if (!message?.message || message.key.fromMe) return;
+        if (message.key.remoteJid !== from) return;
+
+        const ctx =
+          message.message?.extendedTextMessage?.contextInfo ||
+          message.message?.imageMessage?.contextInfo ||
+          message.message?.videoMessage?.contextInfo;
+        if (ctx?.stanzaId !== sentMsg.key.id) return;
+
+        const content = (
+          message.message?.conversation ||
+          message.message?.extendedTextMessage?.text ||
+          message.message?.imageMessage?.caption ||
+          ""
+        ).trim();
+
+        const choice = content.split(/\s+/)[0];
+        const value = content.split(/\s+/).slice(1).join(" ").trim();
+
+        if (!["1", "2", "3", "4"].includes(choice)) return;
+
+        Prince.ev.off("messages.upsert", handler);
+
+        try {
+          if (choice === "1") {
+            // The image is either the reply itself or the message it quotes
+            let imgMsg = message.message?.imageMessage ? message : null;
+            if (!imgMsg) {
+              const inner = ctx?.quotedMessage;
+              if (inner?.imageMessage) imgMsg = { message: inner };
+            }
+            if (!imgMsg) {
+              return reply(
+                "❌ Reply with an image (caption *1*) to set the group profile picture.",
+              );
+            }
+            const buffer = await downloadMediaMessage(imgMsg, "buffer", {});
+            await Prince.updateProfilePicture(from, buffer);
+            await react("✅");
+            return reply("✅ Group profile picture updated successfully!");
+          }
+
+          if (choice === "2") {
+            if (!value) return reply("❌ Please provide the new group name.\n*Example:* 2 My New Group");
+            await Prince.groupUpdateSubject(from, value);
+            await react("✅");
+            return reply(`✅ Group name changed to: *${value}*`);
+          }
+
+          if (choice === "3") {
+            if (!value) return reply("❌ Please provide the new description.\n*Example:* 3 Welcome to our group");
+            await Prince.groupUpdateDescription(from, value);
+            await react("✅");
+            return reply("✅ Group description updated successfully!");
+          }
+
+          if (choice === "4") {
+            const v = value.toLowerCase();
+            if (["lock", "close", "mute", "on"].includes(v)) {
+              await Prince.groupSettingUpdate(from, "announcement");
+              await react("✅");
+              return reply("🔒 Group locked. Only admins can send messages now.");
+            }
+            if (["unlock", "open", "unmute", "off"].includes(v)) {
+              await Prince.groupSettingUpdate(from, "not_announcement");
+              await react("✅");
+              return reply("🔓 Group unlocked. Everyone can send messages now.");
+            }
+            return reply("❌ Invalid permission value. Use *4 lock* or *4 unlock*.");
+          }
+        } catch (err) {
+          await react("❌");
+          return reply(`❌ Failed to apply group setting: ${err.message}`);
+        }
+      } catch (e) {
+        console.error("groupset handler error:", e);
+      }
+    };
+
+    Prince.ev.on("messages.upsert", handler);
+    setTimeout(() => Prince.ev.off("messages.upsert", handler), 120000);
+    await react("✅");
+  },
+);

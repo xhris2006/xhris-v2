@@ -1,4 +1,4 @@
-const { gmd, config, getSetting, setSetting } = require("../mayel");
+const { gmd, config, getSetting, setSetting, getContextInfo } = require("../mayel");
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
@@ -41,7 +41,20 @@ gmd(
     category: "owner",
   },
   async (from, Prince, conText) => {
-    const { react, reply, isSuperUser } = conText;
+    const { react, reply, isSuperUser, mek, sender, botName, newsletterJid } = conText;
+
+    // Send a message that always carries the channel-forward context.
+    const say = async (text) => {
+      try {
+        await Prince.sendMessage(
+          from,
+          { text, contextInfo: getContextInfo(sender, newsletterJid, botName) },
+          { quoted: mek },
+        );
+      } catch (e) {
+        reply(text);
+      }
+    };
 
     if (!isSuperUser) {
       await react("❌");
@@ -49,13 +62,13 @@ gmd(
     }
 
     try {
-      // Repo XHRIS V2 (configurable via env BOT_REPO)
+      // Repo (configurable via env BOT_REPO)
       const repoName = process.env.BOT_REPO || config.BOT_REPO || "xhris2006/xhris-v2";
       const branch = process.env.BOT_BRANCH || "main";
 
       await react("🔍");
 
-      // Récupérer le dernier commit
+      // Fetch the latest commit
       const { data: commitData } = await axios.get(
         `https://api.github.com/repos/${repoName}/commits/${branch}`,
         { headers: { 'User-Agent': 'XHRIS-MD-V2' } }
@@ -66,11 +79,11 @@ gmd(
 
       if (latestCommitHash === currentHash) {
         await react("✅");
-        return reply(
-          `✅ *Bot déjà à jour !*\n\n` +
-          `📦 Repo : ${repoName}\n` +
-          `🌿 Branche : ${branch}\n` +
-          `🔖 Commit : ${latestCommitHash.substring(0, 7)}`
+        return say(
+          `✅ *Bot is already up to date!*\n\n` +
+          `📦 Repo: ${repoName}\n` +
+          `🌿 Branch: ${branch}\n` +
+          `🔖 Commit: ${latestCommitHash.substring(0, 7)}`
         );
       }
 
@@ -79,14 +92,14 @@ gmd(
       const commitMessage = commitData.commit.message;
       const shortHash = latestCommitHash.substring(0, 7);
 
-      await reply(
-        `🔄 *Mise à jour en cours...*\n\n` +
-        `📦 Repo : ${repoName}\n` +
-        `🌿 Branche : ${branch}\n` +
-        `🔖 Commit : ${shortHash}\n` +
-        `👤 Auteur : ${authorName}\n` +
-        `📅 Date : ${commitDate}\n` +
-        `💬 Message : ${commitMessage}`
+      await say(
+        `🔄 *Updating...*\n\n` +
+        `📦 Repo: ${repoName}\n` +
+        `🌿 Branch: ${branch}\n` +
+        `🔖 Commit: ${shortHash}\n` +
+        `👤 Author: ${authorName}\n` +
+        `📅 Date: ${commitDate}\n` +
+        `💬 Message: ${commitMessage}`
       );
 
       const repoShort = repoName.split("/")[1];
@@ -128,21 +141,21 @@ gmd(
       // Copier les nouveaux fichiers
       copyFolderSync(sourcePath, destinationPath, excludeList);
 
-      // Sauvegarder le nouveau hash
+      // Save the new hash
       setSetting("COMMIT_HASH", latestCommitHash);
 
       // Cleanup
       try { fs.unlinkSync(zipPath); } catch {}
       try { fs.rmSync(extractPath, { recursive: true, force: true }); } catch {}
 
-      await reply(
-        `✅ *Mise à jour terminée !*\n\n` +
-        `🔖 Nouveau commit : ${shortHash}\n` +
+      await say(
+        `✅ *Update complete!*\n\n` +
+        `🔖 New commit: ${shortHash}\n` +
         `💬 ${commitMessage}\n\n` +
-        `🔄 Redémarrage du bot dans 5 secondes...`
+        `🔄 Restarting the bot in 5 seconds...`
       );
 
-      // Redémarrer dans 5s
+      // Restart in 5s
       setTimeout(() => {
         process.exit(0);
       }, 5000);
@@ -151,16 +164,16 @@ gmd(
       console.error("Update error:", error);
       await react("❌");
 
-      let errorMsg = "❌ *Mise à jour échouée*\n\n";
+      let errorMsg = "❌ *Update failed*\n\n";
       if (error.response?.status === 404) {
-        errorMsg += `Le repo ${process.env.BOT_REPO || config.BOT_REPO || "xhris2006/xhris-v2"} est introuvable. Vérifie qu'il est public.`;
+        errorMsg += `The repo ${process.env.BOT_REPO || config.BOT_REPO || "xhris2006/xhris-v2"} could not be found. Make sure it is public.`;
       } else if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
-        errorMsg += "Timeout lors du téléchargement. Réessaie dans quelques minutes.";
+        errorMsg += "Download timed out. Please try again in a few minutes.";
       } else {
-        errorMsg += `Erreur : ${error.message}\n\nEssaie de redéployer manuellement sur xhrishost.site.`;
+        errorMsg += `Error: ${error.message}\n\nTry redeploying manually on your host.`;
       }
 
-      return reply(errorMsg);
+      return say(errorMsg);
     }
   }
 );

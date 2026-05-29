@@ -286,32 +286,59 @@ gmd({
 });
 
 
-// ─── DEVICE : info appareil du sender ────────────────────────────────────────
+// ─── DEVICE : detect the WhatsApp device of the replied user ─────────────────
+function detectDevice(id) {
+  if (!id) return { label: "❓ Unknown", type: "unknown" };
+  // Canonical WhatsApp message-id heuristic (same logic Baileys uses)
+  if (id.length > 21) return { label: "🤖 Android", type: "android" };
+  if (id.substring(0, 2) === "3A") return { label: "🍎 iOS (iPhone)", type: "ios" };
+  if (id.startsWith("3EB0")) return { label: "🌐 WhatsApp Web / Desktop", type: "web" };
+  return { label: "🌐 WhatsApp Web / Desktop", type: "web" };
+}
+
 gmd({
   pattern: "device",
-  aliases: ['appareil'],
+  aliases: ['appareil', 'dev'],
   react: "📱",
   category: "tools",
-  description: "Identifie l'appareil/version WhatsApp du sender",
+  description: "Detect the WhatsApp device of the person you reply to.",
 }, async (from, Prince, conText) => {
-  const { reply, react, mek, sender, quotedMsg } = conText;
+  const { reply, react, mek, sender, quotedUser } = conText;
 
   await react("⏳");
   try {
-    const msgId = (quotedMsg?.key || mek.key).id || '';
-    let device = 'Inconnu';
-    if      (msgId.startsWith('3EB0'))                          device = '📱 WhatsApp (iOS/Android)';
-    else if (msgId.startsWith('3A'))                             device = '🍎 WhatsApp iOS';
-    else if (msgId.startsWith('B'))                              device = '💻 WhatsApp Business';
-    else if (msgId.length === 16 && /^[A-F0-9]+$/.test(msgId)) device = '🤖 Android';
-    else if (msgId.startsWith('NS-'))                            device = '🌐 WhatsApp Web';
-    else                                                         device = `📡 Autre (ID: ${msgId.substring(0, 4)}...)`;
+    // The id of the replied message reveals the sender's device.
+    const ctx = mek.message?.extendedTextMessage?.contextInfo;
+    const repliedId = ctx?.stanzaId || "";
 
-    await reply(`📱 *DEVICE INFO*\n\n👤 Sender : ${sender.split('@')[0]}\n📲 Appareil : ${device}\n🆔 Message ID prefix : ${msgId.substring(0, 8)}`);
+    // Target the replied user when available, otherwise the command sender.
+    const targetJid = (quotedUser || sender || "");
+    const targetNum = targetJid.split("@")[0];
+
+    if (!repliedId) {
+      await react("❌");
+      return reply("❌ Reply to someone's message to detect their device.\n\n*Example:* reply to a message with .device");
+    }
+
+    const device = detectDevice(repliedId);
+
+    await Prince.sendMessage(
+      from,
+      {
+        text:
+          `📱 *DEVICE INFO*\n\n` +
+          `👤 *User:* @${targetNum}\n` +
+          `📲 *Device:* ${device.label}\n` +
+          `🆔 *Message ID:* ${repliedId.substring(0, 10)}...`,
+        mentions: [`${targetNum}@s.whatsapp.net`],
+        contextInfo: getContextInfo(targetJid, conText.newsletterJid, conText.botName),
+      },
+      { quoted: mek },
+    );
     await react("✅");
   } catch (e) {
     await react("❌");
-    await reply(`❌ Erreur : ${e.message}`);
+    await reply(`❌ Error: ${e.message}`);
   }
 });
 
@@ -717,4 +744,200 @@ gmd({
     await reply(text);
     await react("");
   } catch (e) { await react("❌"); await reply(`❌ Erreur : ${e.message}`); }
+});
+
+
+// ─── FANCY : stylish text fonts (self-contained, interactive) ────────────────
+const FANCY_FONTS = {
+  "Bold Serif":      { u: "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙", l: "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳", d: "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗" },
+  "Italic Serif":    { u: "𝐴𝐵𝐶𝐷𝐸𝐹𝐺𝐻𝐼𝐽𝐾𝐿𝑀𝑁𝑂𝑃𝑄𝑅𝑆𝑇𝑈𝑉𝑊𝑋𝑌𝑍", l: "𝑎𝑏𝑐𝑑𝑒𝑓𝑔ℎ𝑖𝑗𝑘𝑙𝑚𝑛𝑜𝑝𝑞𝑟𝑠𝑡𝑢𝑣𝑤𝑥𝑦𝑧", d: "0123456789" },
+  "Bold Italic":     { u: "𝑨𝑩𝑪𝑫𝑬𝑭𝑮𝑯𝑰𝑱𝑲𝑳𝑴𝑵𝑶𝑷𝑸𝑹𝑺𝑻𝑼𝑽𝑾𝑿𝒀𝒁", l: "𝒂𝒃𝒄𝒅𝒆𝒇𝒈𝒉𝒊𝒋𝒌𝒍𝒎𝒏𝒐𝒑𝒒𝒓𝒔𝒕𝒖𝒗𝒘𝒙𝒚𝒛", d: "0123456789" },
+  "Script":          { u: "𝒜ℬ𝒞𝒟ℰℱ𝒢ℋℐ𝒥𝒦ℒℳ𝒩𝒪𝒫𝒬ℛ𝒮𝒯𝒰𝒱𝒲𝒳𝒴𝒵", l: "𝒶𝒷𝒸𝒹ℯ𝒻ℊ𝒽𝒾𝒿𝓀𝓁𝓂𝓃ℴ𝓅𝓆𝓇𝓈𝓉𝓊𝓋𝓌𝓍𝓎𝓏", d: "0123456789" },
+  "Bold Script":     { u: "𝓐𝓑𝓒𝓓𝓔𝓕𝓖𝓗𝓘𝓙𝓚𝓛𝓜𝓝𝓞𝓟𝓠𝓡𝓢𝓣𝓤𝓥𝓦𝓧𝓨𝓩", l: "𝓪𝓫𝓬𝓭𝓮𝓯𝓰𝓱𝓲𝓳𝓴𝓵𝓶𝓷𝓸𝓹𝓺𝓻𝓼𝓽𝓾𝓿𝔀𝔁𝔂𝔃", d: "0123456789" },
+  "Double Struck":   { u: "𝔸𝔹ℂ𝔻𝔼𝔽𝔾ℍ𝕀𝕁𝕂𝕃𝕄ℕ𝕆ℙℚℝ𝕊𝕋𝕌𝕍𝕎𝕏𝕐ℤ", l: "𝕒𝕓𝕔𝕕𝕖𝕗𝕘𝕙𝕚𝕛𝕜𝕝𝕞𝕟𝕠𝕡𝕢𝕣𝕤𝕥𝕦𝕧𝕨𝕩𝕪𝕫", d: "𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡" },
+  "Fraktur":         { u: "𝔄𝔅ℭ𝔇𝔈𝔉𝔊ℌℑ𝔍𝔎𝔏𝔐𝔑𝔒𝔓𝔔ℜ𝔖𝔗𝔘𝔙𝔚𝔛𝔜ℨ", l: "𝔞𝔟𝔠𝔡𝔢𝔣𝔤𝔥𝔦𝔧𝔨𝔩𝔪𝔫𝔬𝔭𝔮𝔯𝔰𝔱𝔲𝔳𝔴𝔵𝔶𝔷", d: "0123456789" },
+  "Monospace":       { u: "𝙰𝙱𝙲𝙳𝙴𝙵𝙶𝙷𝙸𝙹𝙺𝙻𝙼𝙽𝙾𝙿𝚀𝚁𝚂𝚃𝚄𝚅𝚆𝚇𝚈𝚉", l: "𝚊𝚋𝚌𝚍𝚎𝚏𝚐𝚑𝚒𝚓𝚔𝚕𝚖𝚗𝚘𝚙𝚚𝚛𝚜𝚝𝚞𝚟𝚠𝚡𝚢𝚣", d: "𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿" },
+  "Sans Bold":       { u: "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭", l: "𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇", d: "𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵" },
+  "Circled":         { u: "ⒶⒷⒸⒹⒺⒻⒼⒽⒾⒿⓀⓁⓂⓃⓄⓅⓆⓇⓈⓉⓊⓋⓌⓍⓎⓏ", l: "ⓐⓑⓒⓓⓔⓕⓖⓗⓘⓙⓚⓛⓜⓝⓞⓟⓠⓡⓢⓣⓤⓥⓦⓧⓨⓩ", d: "⓪①②③④⑤⑥⑦⑧⑨" },
+  "Squared":         { u: "🄰🄱🄲🄳🄴🄵🄶🄷🄸🄹🄺🄻🄼🄽🄾🄿🅀🅁🅂🅃🅄🅅🅆🅇🅈🅉", l: "🄰🄱🄲🄳🄴🄵🄶🄷🄸🄹🄺🄻🄼🄽🄾🄿🅀🅁🅂🅃🅄🅅🅆🅇🅈🅉", d: "0123456789" },
+  "Bubble Fill":     { u: "🅐🅑🅒🅓🅔🅕🅖🅗🅘🅙🅚🅛🅜🅝🅞🅟🅠🅡🅢🅣🅤🅥🅦🅧🅨🅩", l: "🅐🅑🅒🅓🅔🅕🅖🅗🅘🅙🅚🅛🅜🅝🅞🅟🅠🅡🅢🅣🅤🅥🅦🅧🅨🅩", d: "⓿➊➋➌➍➎➏➐➑➒" },
+  "Small Caps":      { u: "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘQʀꜱᴛᴜᴠᴡxʏᴢ", l: "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘQʀꜱᴛᴜᴠᴡxʏᴢ", d: "0123456789" },
+  "Upside Down":     { u: "∀ꓭƆᗡƎℲ⅁HIſꓘ⅂WNOԀΌᴚS⊥∩ΛMX⅄Z", l: "ɐqɔpǝɟƃɥᴉɾʞlɯuodbɹsʇnʌʍxʎz", d: "0ƖᄅƐㄣϛ9ㄥ86" },
+};
+
+function applyFancyFont(text, font) {
+  const U = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const L = "abcdefghijklmnopqrstuvwxyz";
+  const D = "0123456789";
+  const upper = [...font.u];
+  const lower = [...font.l];
+  const digits = [...font.d];
+  let out = "";
+  for (const ch of text) {
+    let idx = U.indexOf(ch);
+    if (idx > -1) { out += upper[idx] || ch; continue; }
+    idx = L.indexOf(ch);
+    if (idx > -1) { out += lower[idx] || ch; continue; }
+    idx = D.indexOf(ch);
+    if (idx > -1) { out += digits[idx] || ch; continue; }
+    out += ch;
+  }
+  return out;
+}
+
+gmd({
+  pattern: "fancy",
+  aliases: ["stylish", "fancytext", "font"],
+  react: "🎨",
+  category: "tools",
+  description: "Convert text into stylish fonts. Reply with a number to pick a style.",
+}, async (from, Prince, conText) => {
+  const { q, reply, react, mek, sender, botName, newsletterJid } = conText;
+
+  if (!q || !q.trim()) {
+    await react("❌");
+    return reply("❌ Please provide some text.\n\n*Example:* .fancy Hello World");
+  }
+
+  const input = q.trim();
+  const fontNames = Object.keys(FANCY_FONTS);
+
+  let menu = `🎨 *FANCY TEXT STYLES*\n\n📝 *Text:* ${input}\n\nReply to this message with a number to get that style:\n\n`;
+  fontNames.forEach((name, i) => {
+    menu += `*${i + 1}.* ${applyFancyFont(input, FANCY_FONTS[name])}\n`;
+  });
+  menu += `\n_Reply with a number (1-${fontNames.length}) to copy a single style._`;
+
+  const sentMsg = await Prince.sendMessage(
+    from,
+    {
+      text: menu,
+      contextInfo: getContextInfo(sender, newsletterJid, botName),
+    },
+    { quoted: mek },
+  );
+  await react("✅");
+
+  const handler = async (event) => {
+    try {
+      const message = event.messages[0];
+      if (!message?.message || message.key.fromMe) return;
+      if (message.key.remoteJid !== from) return;
+
+      const isReply =
+        message.message?.extendedTextMessage?.contextInfo?.stanzaId === sentMsg.key.id;
+      if (!isReply) return;
+
+      const choice = (
+        message.message?.conversation ||
+        message.message?.extendedTextMessage?.text ||
+        ""
+      ).trim();
+
+      const num = parseInt(choice, 10);
+      if (isNaN(num) || num < 1 || num > fontNames.length) return;
+
+      Prince.ev.off("messages.upsert", handler);
+      const font = FANCY_FONTS[fontNames[num - 1]];
+      await Prince.sendMessage(
+        from,
+        {
+          text: applyFancyFont(input, font),
+          contextInfo: getContextInfo(sender, newsletterJid, botName),
+        },
+        { quoted: message },
+      );
+    } catch (e) {
+      console.error("fancy handler error:", e);
+    }
+  };
+
+  Prince.ev.on("messages.upsert", handler);
+  setTimeout(() => Prince.ev.off("messages.upsert", handler), 120000);
+});
+
+
+// ─── WEBSCAN : basic website recon (status, headers, server, IP, title) ──────
+gmd({
+  pattern: "webscan",
+  aliases: ['sitescan', 'urlinfo', 'scanurl'],
+  react: "🔎",
+  category: "tools",
+  description: "Scan a website: HTTP status, server, headers, IP and page title.",
+}, async (from, Prince, conText) => {
+  const { q, reply, react, mek, sender, botName, newsletterJid } = conText;
+  const dns = require('dns').promises;
+
+  if (!q || !q.trim()) {
+    await react("❌");
+    return reply("❌ Please provide a URL.\n\n*Example:* .webscan https://example.com");
+  }
+
+  let target = q.trim();
+  if (!/^https?:\/\//i.test(target)) target = "https://" + target;
+
+  let host;
+  try {
+    host = new URL(target).hostname;
+  } catch {
+    await react("❌");
+    return reply("❌ Invalid URL.");
+  }
+
+  await react("⏳");
+  try {
+    // Resolve IP address(es)
+    let ips = [];
+    try {
+      const records = await dns.lookup(host, { all: true });
+      ips = records.map((r) => r.address);
+    } catch (e) {}
+
+    // Fetch the page (follow redirects, accept any status)
+    const res = await axios.get(target, {
+      timeout: 30000,
+      maxRedirects: 5,
+      validateStatus: () => true,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+      },
+      maxContentLength: 8 * 1024 * 1024,
+      responseType: "text",
+    });
+
+    const h = res.headers || {};
+    const body = typeof res.data === "string" ? res.data : "";
+    const titleMatch = body.match(/<title[^>]*>([^<]*)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].trim() : "N/A";
+
+    const interesting = [
+      ["Server", h["server"]],
+      ["Powered-By", h["x-powered-by"]],
+      ["Content-Type", h["content-type"]],
+      ["CDN", h["cf-ray"] ? "Cloudflare" : h["x-cache"] ? "Cache/CDN" : undefined],
+      ["Strict-Transport-Security", h["strict-transport-security"] ? "Yes" : "No"],
+      ["X-Frame-Options", h["x-frame-options"]],
+      ["Content-Security-Policy", h["content-security-policy"] ? "Yes" : "No"],
+    ].filter(([, v]) => v !== undefined && v !== null);
+
+    let text = `🔎 *WEBSCAN REPORT*\n\n`;
+    text += `🌐 *URL:* ${target}\n`;
+    text += `🏷️ *Host:* ${host}\n`;
+    text += `📡 *IP:* ${ips.length ? ips.join(", ") : "N/A"}\n`;
+    text += `📊 *Status:* ${res.status} ${res.statusText || ""}\n`;
+    text += `📄 *Title:* ${title}\n\n`;
+    text += `*Headers / Security:*\n`;
+    for (const [k, v] of interesting) text += `• *${k}:* ${v}\n`;
+
+    await Prince.sendMessage(
+      from,
+      { text: text.trim(), contextInfo: getContextInfo(sender, newsletterJid, botName) },
+      { quoted: mek },
+    );
+    await react("✅");
+  } catch (e) {
+    await react("❌");
+    await reply(`❌ Scan failed: ${e.message}`);
+  }
 });

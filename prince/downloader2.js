@@ -546,7 +546,7 @@ gmd(
       const videoInfo = searchResponse.results[0];
 
       const infoMessage = {
-        image: { url: videoInfo.thumbnail || botPic },
+        image: { url: botPic },
         caption: `> *${botName} VIDEO DOWNLOADER*\n\n` +
           `*Title:* ${videoInfo.title}\n` +
           `*Duration:* ${videoInfo.timestamp}\n` +
