@@ -496,6 +496,25 @@ gmd({
   }
 });
 
+// Cleans and validates a candidate block JID. Returns null if invalid.
+function sanitizeBlockJid(jid) {
+  if (!jid || typeof jid !== "string") return null;
+
+  // @lid case: validate the xxxx@lid format
+  if (jid.endsWith("@lid")) {
+    const lidNum = jid.split("@")[0].replace(/[^0-9]/g, "");
+    if (lidNum.length < 5) return null;
+    return `${lidNum}@lid`;
+  }
+
+  // Keep only digits from the part before the first @ — this strips double
+  // suffixes (@s.whatsapp.net@s.whatsapp.net), device parts (:12), and junk.
+  const base = jid.split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+  if (base.length < 8) return null;
+
+  return `${base}@s.whatsapp.net`;
+}
+
 // Returns { candidates: [...jids to try] } or { error: "..." } or null
 async function resolveBlockTarget(conText, from, Prince) {
   const { mentionedJid, quotedUser, q } = conText;
@@ -544,13 +563,19 @@ async function resolveBlockTarget(conText, from, Prince) {
   // Always include the constructed target as a last resort
   if (!candidates.includes(target)) candidates.push(target);
 
-  if (candidates.length === 0) return null;
-  return { candidates };
+  // Sanitize: clean each candidate and drop duplicates + invalid ones
+  const clean = [];
+  for (const c of candidates) {
+    const s = sanitizeBlockJid(c);
+    if (s && !clean.includes(s)) clean.push(s);
+  }
+
+  if (clean.length === 0) return null;
+  return { candidates: clean };
 }
 
 
-// Tries to block/unblock by testing each candidate until one succeeds.
-// Returns { ok: true, jid } or { ok: false, error }
+// Tries each candidate until one succeeds. Returns { ok, jid } or { ok:false, error }
 async function applyBlockAction(Prince, candidates, action) {
   let lastError = null;
   for (const jid of candidates) {
@@ -559,7 +584,12 @@ async function applyBlockAction(Prince, candidates, action) {
       return { ok: true, jid };
     } catch (e) {
       lastError = e;
-      // Try the next candidate
+      const msg = e?.message || "";
+      // If the error is NOT a plain bad-request (e.g. network/500), stop to
+      // avoid risking a socket crash by looping on more failing calls.
+      if (!msg.includes("bad-request") && !msg.includes("not-authorized") && !msg.includes("item-not-found")) {
+        break;
+      }
     }
   }
   return { ok: false, error: lastError ? lastError.message : "unknown error" };
