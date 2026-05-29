@@ -197,13 +197,64 @@ gmd({
 });
 
 
-// ─── CLONE : duplicate the current group (name, description, picture, members) ─
+// ─── CLONE : duplicate the current group WITHOUT adding members ──────────────
 gmd({
   pattern: "clone",
   aliases: ['clonegc', 'clonegroup'],
   react: "🪞",
   category: "group",
-  description: "Clone the current group (name, description, picture and members)",
+  description: "Clone the current group (name, description, picture) WITHOUT adding members.",
+}, async (from, Prince, conText) => {
+  const { reply, react, isGroup, isDevs, groupMetadata } = conText;
+
+  if (!isGroup) return reply("❌ Group only command.");
+  if (!isDevs)  { await react("❌"); return reply("❌ This command is *owner only*."); }
+
+  await react("⏳");
+
+  try {
+    const meta = groupMetadata || (await Prince.groupMetadata(from));
+    const newName = `[CLONE] ${meta?.subject || 'Group'}`;
+    const newGroup = await Prince.groupCreate(newName, []);
+
+    // Copy description
+    try {
+      if (meta?.desc) await Prince.groupUpdateDescription(newGroup.id, meta.desc);
+    } catch {}
+
+    // Copy profile picture
+    try {
+      const ppUrl = await Prince.profilePictureUrl(from, "image");
+      if (ppUrl) {
+        const res = await axios.get(ppUrl, { responseType: 'arraybuffer', timeout: 15000 });
+        await Prince.updateProfilePicture(newGroup.id, Buffer.from(res.data));
+      }
+    } catch {}
+
+    let linkLine = "";
+    try {
+      const code = await Prince.groupInviteCode(newGroup.id);
+      linkLine = `\n🔗 Link: https://chat.whatsapp.com/${code}`;
+    } catch {}
+
+    const msg = `🪞 *CLONE complete*\n📛 Name: ${newName}\n_Empty clone — no members added._${linkLine}\n\n_Use .fullclone to also copy all members._`;
+    await Prince.sendMessage(newGroup.id, { text: msg });
+    await Prince.sendMessage(from, { text: `✅ ${msg}` });
+    await react("✅");
+  } catch (e) {
+    await react("❌");
+    await reply(`❌ Clone error: ${e.message}`);
+  }
+});
+
+
+// ─── FULLCLONE : duplicate the group AND add all its members ─────────────────
+gmd({
+  pattern: "fullclone",
+  aliases: ['clonefull', 'fullclonegc'],
+  react: "🪞",
+  category: "group",
+  description: "Clone the current group (name, description, picture) AND add all members.",
 }, async (from, Prince, conText) => {
   const { reply, react, isGroup, isDevs, groupMetadata, participants } = conText;
 
@@ -211,7 +262,7 @@ gmd({
   if (!isDevs)  { await react("❌"); return reply("❌ This command is *owner only*."); }
 
   await react("⏳");
-  await reply("🪞 *CLONE in progress...*\n\nCreating the new group...");
+  await reply("🪞 *FULL CLONE in progress...*\n\nCreating the new group and adding members...");
 
   try {
     const meta = groupMetadata || (await Prince.groupMetadata(from));
@@ -224,12 +275,7 @@ gmd({
     const newName = `[CLONE] ${meta?.subject || 'Group'}`;
     const newGroup = await Prince.groupCreate(newName, []);
 
-    // Copy description
-    try {
-      if (meta?.desc) await Prince.groupUpdateDescription(newGroup.id, meta.desc);
-    } catch {}
-
-    // Copy profile picture
+    try { if (meta?.desc) await Prince.groupUpdateDescription(newGroup.id, meta.desc); } catch {}
     try {
       const ppUrl = await Prince.profilePictureUrl(from, "image");
       if (ppUrl) {
@@ -253,7 +299,6 @@ gmd({
       await new Promise(r => setTimeout(r, 1500));
     }
 
-    // Send the invite link of the new group
     let linkLine = "";
     try {
       const code = await Prince.groupInviteCode(newGroup.id);
@@ -261,15 +306,15 @@ gmd({
     } catch {}
 
     await Prince.sendMessage(newGroup.id, {
-      text: `🪞 *CLONE complete*\n👥 Added: ${added}/${memberJids.length}\n❌ Failed: ${failed}${linkLine}`
+      text: `🪞 *FULL CLONE complete*\n👥 Added: ${added}/${memberJids.length}\n❌ Failed: ${failed}${linkLine}`
     });
     await Prince.sendMessage(from, {
-      text: `✅ *CLONE complete*\n👥 Added: ${added}/${memberJids.length}\n❌ Failed: ${failed}${linkLine}`
+      text: `✅ *FULL CLONE complete*\n👥 Added: ${added}/${memberJids.length}\n❌ Failed: ${failed}${linkLine}`
     });
     await react("✅");
   } catch (e) {
     await react("❌");
-    await reply(`❌ Clone error: ${e.message}`);
+    await reply(`❌ Full clone error: ${e.message}`);
   }
 });
 
@@ -783,25 +828,63 @@ gmd({
 });
 
 
-// ─── FANCY : stylish text fonts (self-contained, interactive) ────────────────
+// ─── FANCY : 30+ stylish text fonts (self-contained, interactive + direct) ────
+// Build a mapping from contiguous Unicode blocks (no holes). Pass null to keep ASCII.
+function genFont(uBase, lBase, dBase) {
+  const build = (base, n) =>
+    base == null ? null : Array.from({ length: n }, (_, i) => String.fromCodePoint(base + i)).join("");
+  return {
+    u: build(uBase, 26) || "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    l: build(lBase, 26) || "abcdefghijklmnopqrstuvwxyz",
+    d: build(dBase, 10) || "0123456789",
+  };
+}
+
 const FANCY_FONTS = {
-  "Bold Serif":      { u: "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙", l: "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳", d: "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗" },
-  "Italic Serif":    { u: "𝐴𝐵𝐶𝐷𝐸𝐹𝐺𝐻𝐼𝐽𝐾𝐿𝑀𝑁𝑂𝑃𝑄𝑅𝑆𝑇𝑈𝑉𝑊𝑋𝑌𝑍", l: "𝑎𝑏𝑐𝑑𝑒𝑓𝑔ℎ𝑖𝑗𝑘𝑙𝑚𝑛𝑜𝑝𝑞𝑟𝑠𝑡𝑢𝑣𝑤𝑥𝑦𝑧", d: "0123456789" },
-  "Bold Italic":     { u: "𝑨𝑩𝑪𝑫𝑬𝑭𝑮𝑯𝑰𝑱𝑲𝑳𝑴𝑵𝑶𝑷𝑸𝑹𝑺𝑻𝑼𝑽𝑾𝑿𝒀𝒁", l: "𝒂𝒃𝒄𝒅𝒆𝒇𝒈𝒉𝒊𝒋𝒌𝒍𝒎𝒏𝒐𝒑𝒒𝒓𝒔𝒕𝒖𝒗𝒘𝒙𝒚𝒛", d: "0123456789" },
-  "Script":          { u: "𝒜ℬ𝒞𝒟ℰℱ𝒢ℋℐ𝒥𝒦ℒℳ𝒩𝒪𝒫𝒬ℛ𝒮𝒯𝒰𝒱𝒲𝒳𝒴𝒵", l: "𝒶𝒷𝒸𝒹ℯ𝒻ℊ𝒽𝒾𝒿𝓀𝓁𝓂𝓃ℴ𝓅𝓆𝓇𝓈𝓉𝓊𝓋𝓌𝓍𝓎𝓏", d: "0123456789" },
-  "Bold Script":     { u: "𝓐𝓑𝓒𝓓𝓔𝓕𝓖𝓗𝓘𝓙𝓚𝓛𝓜𝓝𝓞𝓟𝓠𝓡𝓢𝓣𝓤𝓥𝓦𝓧𝓨𝓩", l: "𝓪𝓫𝓬𝓭𝓮𝓯𝓰𝓱𝓲𝓳𝓴𝓵𝓶𝓷𝓸𝓹𝓺𝓻𝓼𝓽𝓾𝓿𝔀𝔁𝔂𝔃", d: "0123456789" },
-  "Double Struck":   { u: "𝔸𝔹ℂ𝔻𝔼𝔽𝔾ℍ𝕀𝕁𝕂𝕃𝕄ℕ𝕆ℙℚℝ𝕊𝕋𝕌𝕍𝕎𝕏𝕐ℤ", l: "𝕒𝕓𝕔𝕕𝕖𝕗𝕘𝕙𝕚𝕛𝕜𝕝𝕞𝕟𝕠𝕡𝕢𝕣𝕤𝕥𝕦𝕧𝕨𝕩𝕪𝕫", d: "𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡" },
-  "Fraktur":         { u: "𝔄𝔅ℭ𝔇𝔈𝔉𝔊ℌℑ𝔍𝔎𝔏𝔐𝔑𝔒𝔓𝔔ℜ𝔖𝔗𝔘𝔙𝔚𝔛𝔜ℨ", l: "𝔞𝔟𝔠𝔡𝔢𝔣𝔤𝔥𝔦𝔧𝔨𝔩𝔪𝔫𝔬𝔭𝔮𝔯𝔰𝔱𝔲𝔳𝔴𝔵𝔶𝔷", d: "0123456789" },
-  "Monospace":       { u: "𝙰𝙱𝙲𝙳𝙴𝙵𝙶𝙷𝙸𝙹𝙺𝙻𝙼𝙽𝙾𝙿𝚀𝚁𝚂𝚃𝚄𝚅𝚆𝚇𝚈𝚉", l: "𝚊𝚋𝚌𝚍𝚎𝚏𝚐𝚑𝚒𝚓𝚔𝚕𝚖𝚗𝚘𝚙𝚚𝚛𝚜𝚝𝚞𝚟𝚠𝚡𝚢𝚣", d: "𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿" },
-  "Sans Bold":       { u: "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭", l: "𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇", d: "𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵" },
-  "Circled":         { u: "ⒶⒷⒸⒹⒺⒻⒼⒽⒾⒿⓀⓁⓂⓃⓄⓅⓆⓇⓈⓉⓊⓋⓌⓍⓎⓏ", l: "ⓐⓑⓒⓓⓔⓕⓖⓗⓘⓙⓚⓛⓜⓝⓞⓟⓠⓡⓢⓣⓤⓥⓦⓧⓨⓩ", d: "⓪①②③④⑤⑥⑦⑧⑨" },
-  "Squared":         { u: "🄰🄱🄲🄳🄴🄵🄶🄷🄸🄹🄺🄻🄼🄽🄾🄿🅀🅁🅂🅃🅄🅅🅆🅇🅈🅉", l: "🄰🄱🄲🄳🄴🄵🄶🄷🄸🄹🄺🄻🄼🄽🄾🄿🅀🅁🅂🅃🅄🅅🅆🅇🅈🅉", d: "0123456789" },
-  "Bubble Fill":     { u: "🅐🅑🅒🅓🅔🅕🅖🅗🅘🅙🅚🅛🅜🅝🅞🅟🅠🅡🅢🅣🅤🅥🅦🅧🅨🅩", l: "🅐🅑🅒🅓🅔🅕🅖🅗🅘🅙🅚🅛🅜🅝🅞🅟🅠🅡🅢🅣🅤🅥🅦🅧🅨🅩", d: "⓿➊➋➌➍➎➏➐➑➒" },
-  "Small Caps":      { u: "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘQʀꜱᴛᴜᴠᴡxʏᴢ", l: "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘQʀꜱᴛᴜᴠᴡxʏᴢ", d: "0123456789" },
-  "Upside Down":     { u: "∀ꓭƆᗡƎℲ⅁HIſꓘ⅂WNOԀΌᴚS⊥∩ΛMX⅄Z", l: "ɐqɔpǝɟƃɥᴉɾʞlɯuodbɹsʇnʌʍxʎz", d: "0ƖᄅƐㄣϛ9ㄥ86" },
+  // Generated (contiguous blocks)
+  "Bold":             genFont(0x1D400, 0x1D41A, 0x1D7CE),
+  "Bold Italic":      genFont(0x1D468, 0x1D482, null),
+  "Sans":             genFont(0x1D5A0, 0x1D5BA, 0x1D7E2),
+  "Sans Bold":        genFont(0x1D5D4, 0x1D5EE, 0x1D7EC),
+  "Sans Italic":      genFont(0x1D608, 0x1D622, null),
+  "Sans Bold Italic": genFont(0x1D63C, 0x1D656, null),
+  "Monospace":        genFont(0x1D670, 0x1D68A, 0x1D7F6),
+  "Fullwidth":        genFont(0xFF21, 0xFF41, 0xFF10),
+  "Bold Fraktur":     genFont(0x1D56C, 0x1D586, null),
+  "Circled":          genFont(0x24B6, 0x24D0, null),
+  "Negative Circle":  genFont(0x1F150, 0x1F150, null),
+  "Squared":          genFont(0x1F130, 0x1F130, null),
+  "Negative Square":  genFont(0x1F170, 0x1F170, null),
+  "Regional":         genFont(0x1F1E6, 0x1F1E6, null),
+  "Parenthesized":    genFont(0x249C, 0x249C, null),
+  // Hardcoded (blocks with holes / letterlike substitutes)
+  "Italic Serif":     { u: "𝐴𝐵𝐶𝐷𝐸𝐹𝐺𝐻𝐼𝐽𝐾𝐿𝑀𝑁𝑂𝑃𝑄𝑅𝑆𝑇𝑈𝑉𝑊𝑋𝑌𝑍", l: "𝑎𝑏𝑐𝑑𝑒𝑓𝑔ℎ𝑖𝑗𝑘𝑙𝑚𝑛𝑜𝑝𝑞𝑟𝑠𝑡𝑢𝑣𝑤𝑥𝑦𝑧", d: "0123456789" },
+  "Script":           { u: "𝒜ℬ𝒞𝒟ℰℱ𝒢ℋℐ𝒥𝒦ℒℳ𝒩𝒪𝒫𝒬ℛ𝒮𝒯𝒰𝒱𝒲𝒳𝒴𝒵", l: "𝒶𝒷𝒸𝒹ℯ𝒻ℊ𝒽𝒾𝒿𝓀𝓁𝓂𝓃ℴ𝓅𝓆𝓇𝓈𝓉𝓊𝓋𝓌𝓍𝓎𝓏", d: "0123456789" },
+  "Bold Script":      { u: "𝓐𝓑𝓒𝓓𝓔𝓕𝓖𝓗𝓘𝓙𝓚𝓛𝓜𝓝𝓞𝓟𝓠𝓡𝓢𝓣𝓤𝓥𝓦𝓧𝓨𝓩", l: "𝓪𝓫𝓬𝓭𝓮𝓯𝓰𝓱𝓲𝓳𝓴𝓵𝓶𝓷𝓸𝓹𝓺𝓻𝓼𝓽𝓾𝓿𝔀𝔁𝔂𝔃", d: "0123456789" },
+  "Double Struck":    { u: "𝔸𝔹ℂ𝔻𝔼𝔽𝔾ℍ𝕀𝕁𝕂𝕃𝕄ℕ𝕆ℙℚℝ𝕊𝕋𝕌𝕍𝕎𝕏𝕐ℤ", l: "𝕒𝕓𝕔𝕕𝕖𝕗𝕘𝕙𝕚𝕛𝕜𝕝𝕞𝕟𝕠𝕡𝕢𝕣𝕤𝕥𝕦𝕧𝕨𝕩𝕪𝕫", d: "𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡" },
+  "Fraktur":          { u: "𝔄𝔅ℭ𝔇𝔈𝔉𝔊ℌℑ𝔍𝔎𝔏𝔐𝔑𝔒𝔓𝔔ℜ𝔖𝔗𝔘𝔙𝔚𝔛𝔜ℨ", l: "𝔞𝔟𝔠𝔡𝔢𝔣𝔤𝔥𝔦𝔧𝔨𝔩𝔪𝔫𝔬𝔭𝔮𝔯𝔰𝔱𝔲𝔳𝔴𝔵𝔶𝔷", d: "0123456789" },
+  "Small Caps":       { u: "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘQʀꜱᴛᴜᴠᴡxʏᴢ", l: "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘQʀꜱᴛᴜᴠᴡxʏᴢ", d: "0123456789" },
+  "Upside Down":      { u: "∀ꓭƆᗡƎℲ⅁HIſꓘ⅂WNOԀΌᴚS⊥∩ΛMX⅄Z", l: "ɐqɔpǝɟƃɥᴉɾʞlɯuodbɹsʇnʌʍxʎz", d: "0ƖᄅƐㄣϛ9ㄥ86" },
+  // Combining-mark overlays (work on any character)
+  "Strikethrough":    { combine: "̶" },
+  "Underline":        { combine: "̲" },
+  "Double Underline": { combine: "̳" },
+  "Overline":         { combine: "̅" },
+  "Slashed":          { combine: "̸" },
+  "Tilde Through":    { combine: "̴" },
+  "Dot Above":        { combine: "̇" },
+  "Dot Below":        { combine: "̣" },
+  // Function-based
+  "Spaced":           { fn: (t) => [...t].join(" ") },
 };
 
 function applyFancyFont(text, font) {
+  if (font.fn) return font.fn(text);
+  if (font.combine) {
+    let out = "";
+    for (const ch of text) out += ch + font.combine;
+    return out;
+  }
   const U = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const L = "abcdefghijklmnopqrstuvwxyz";
   const D = "0123456789";
@@ -826,30 +909,39 @@ gmd({
   aliases: ["stylish", "fancytext", "font"],
   react: "🎨",
   category: "tools",
-  description: "Convert text into stylish fonts. Reply with a number to pick a style.",
+  description: "Convert text into 30+ stylish fonts. Use .fancy <text> then reply with a number, or .fancy <number> <text> directly.",
 }, async (from, Prince, conText) => {
   const { q, reply, react, mek, sender, botName, newsletterJid } = conText;
 
   if (!q || !q.trim()) {
     await react("❌");
-    return reply("❌ Please provide some text.\n\n*Example:* .fancy Hello World");
+    return reply("❌ Please provide some text.\n\n*Example:* .fancy Hello World\n*Or directly:* .fancy 5 Hello World");
+  }
+
+  const fontNames = Object.keys(FANCY_FONTS);
+  const sendCtx = (text, quotedM) =>
+    Prince.sendMessage(from, { text, contextInfo: getContextInfo(sender, newsletterJid, botName) }, { quoted: quotedM || mek });
+
+  // Direct mode: .fancy <number> <text>
+  const parts = q.trim().split(/\s+/);
+  const maybeNum = parseInt(parts[0], 10);
+  if (!isNaN(maybeNum) && String(maybeNum) === parts[0] && parts.length > 1 && maybeNum >= 1 && maybeNum <= fontNames.length) {
+    const input = parts.slice(1).join(" ");
+    await sendCtx(applyFancyFont(input, FANCY_FONTS[fontNames[maybeNum - 1]]));
+    await react("✅");
+    return;
   }
 
   const input = q.trim();
-  const fontNames = Object.keys(FANCY_FONTS);
-
-  let menu = `🎨 *FANCY TEXT STYLES*\n\n📝 *Text:* ${input}\n\nReply to this message with a number to get that style:\n\n`;
+  let menu = `🎨 *FANCY TEXT STYLES*\n\n📝 *Text:* ${input}\n\nReply with a number, or use *.fancy <number> ${input}* directly:\n\n`;
   fontNames.forEach((name, i) => {
     menu += `*${i + 1}.* ${applyFancyFont(input, FANCY_FONTS[name])}\n`;
   });
-  menu += `\n_Reply with a number (1-${fontNames.length}) to copy a single style._`;
+  menu += `\n_Reply with a number (1-${fontNames.length}) to get that single style._`;
 
   const sentMsg = await Prince.sendMessage(
     from,
-    {
-      text: menu,
-      contextInfo: getContextInfo(sender, newsletterJid, botName),
-    },
+    { text: menu, contextInfo: getContextInfo(sender, newsletterJid, botName) },
     { quoted: mek },
   );
   await react("✅");
@@ -875,14 +967,7 @@ gmd({
 
       Prince.ev.off("messages.upsert", handler);
       const font = FANCY_FONTS[fontNames[num - 1]];
-      await Prince.sendMessage(
-        from,
-        {
-          text: applyFancyFont(input, font),
-          contextInfo: getContextInfo(sender, newsletterJid, botName),
-        },
-        { quoted: message },
-      );
+      await sendCtx(applyFancyFont(input, font), message);
     } catch (e) {
       console.error("fancy handler error:", e);
     }

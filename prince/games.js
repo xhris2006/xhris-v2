@@ -416,26 +416,21 @@ gmd(
   }
 );
 
-// ── MATH QUIZ (fastest correct answer) ─────────────────────────────────────────
+// ── MATH QUIZ (continuous, scores) ─────────────────────────────────────────
 gmd(
   {
     pattern: "math",
     aliases: ["mathquiz", "calc"],
     react: "🧮",
     category: "games",
-    description: "Solve the math problem — fastest correct answer wins (DM or group).",
+    description: "Continuous math quiz — correct answer or 'next' moves on, 'endgame' to stop.",
   },
   async (from, Prince, conText) => {
     const { reply, sender, botName, newsletterJid } = conText;
 
     if (games.has(from)) {
-      return reply("⚠️ A game is already running in this chat. Type *.endgame* to stop it.");
+      return reply("⚠️ A game is already running. Type *endgame* to stop it.");
     }
-
-    const a = Math.floor(Math.random() * 40) + 1;
-    const b = Math.floor(Math.random() * 40) + 1;
-    const op = rand(["+", "-", "*"]);
-    const answer = op === "+" ? a + b : op === "-" ? a - b : a * b;
 
     const sendCtx = (text) =>
       Prince.sendMessage(from, {
@@ -443,58 +438,77 @@ gmd(
         contextInfo: getContextInfo(sender, newsletterJid, botName),
       });
 
-    await sendCtx(
-      `🧮 *MATH QUIZ*\n━━━━━━━━━━━━━━━━━━━━━━\n` +
-      `Solve: *${a} ${op} ${b} = ?*\n\n` +
-      `First correct answer wins! Type your answer.\n` +
-      `Type *.endgame* to cancel.`
-    );
+    const state = { type: "math", scores: {}, answer: null, problem: "", timeout: null, handler: null };
 
-    const handler = async ({ messages }) => {
+    const askNext = async () => {
+      const a = Math.floor(Math.random() * 40) + 1;
+      const b = Math.floor(Math.random() * 40) + 1;
+      const op = rand(["+", "-", "*"]);
+      state.answer = op === "+" ? a + b : op === "-" ? a - b : a * b;
+      state.problem = `${a} ${op} ${b}`;
+      await sendCtx(
+        `🧮 *MATH QUIZ*\n━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `What is: *${state.problem}* ?\n\n` +
+        `Type your answer! *next* to skip, *endgame* to stop.`
+      );
+    };
+
+    state.handler = async ({ messages }) => {
       try {
         const m = messages[0];
         if (!m?.message || m.key.remoteJid !== from) return;
-        const txt = getText(m);
-        if (!/^-?\d{1,5}$/.test(txt)) return;
+        const txt = getText(m).toLowerCase().trim();
+        if (!txt) return;
+
         const who = senderOf(m, from).split("@")[0];
-        if (parseInt(txt, 10) === answer) {
+
+        if (txt === "endgame" || txt === ".endgame" || txt === "stopgame") {
+          const scoreList = Object.entries(state.scores)
+            .sort((a, b) => b[1] - a[1])
+            .map(([u, s], i) => `${i + 1}. @${u} — ${s} pt(s)`)
+            .join("\n") || "_No points scored._";
           endGame(Prince, from);
-          return sendCtx(`🎉 Correct! *${a} ${op} ${b} = ${answer}*\n✅ Winner: @${who}`);
+          return sendCtx(`🛑 *MATH ended!*\n\n🏆 *Scores:*\n${scoreList}`);
+        }
+        if (txt === "next" || txt === ".next" || txt === "skip") {
+          await sendCtx(`⏭️ Skipping! The answer was *${state.answer}*.`);
+          return askNext();
+        }
+
+        if (txt.startsWith(".")) return;
+
+        const guess = parseInt(txt.replace(/[^0-9-]/g, ""), 10);
+        if (!isNaN(guess) && guess === state.answer) {
+          state.scores[who] = (state.scores[who] || 0) + 1;
+          await sendCtx(`🎉 Correct @${who}! *${state.problem} = ${state.answer}*\n📊 Your score: ${state.scores[who]} pt(s)\n\n_Next..._`);
+          return askNext();
         }
       } catch (e) {
         console.error("Math error:", e);
       }
     };
 
-    const timeout = setTimeout(() => {
-      if (games.has(from)) {
-        endGame(Prince, from);
-        sendCtx(`⌛ *MATH QUIZ* timed out. The answer was *${answer}*.`);
-      }
-    }, 60 * 1000);
-
-    games.set(from, { type: "math", handler, timeout });
-    Prince.ev.on("messages.upsert", handler);
+    games.set(from, state);
+    Prince.ev.on("messages.upsert", state.handler);
+    await askNext();
   }
 );
 
-// ── TRIVIA ─────────────────────────────────────────────────────────────────
+// ── TRIVIA (continuous, scores) ─────────────────────────────────────────────
 gmd(
   {
     pattern: "trivia",
     aliases: ["quiz"],
     react: "❓",
     category: "games",
-    description: "Answer a trivia question — first correct answer wins (DM or group).",
+    description: "Continuous trivia — correct answer or 'next' moves on, 'endgame' to stop.",
   },
   async (from, Prince, conText) => {
     const { reply, sender, botName, newsletterJid } = conText;
 
     if (games.has(from)) {
-      return reply("⚠️ A game is already running in this chat. Type *.endgame* to stop it.");
+      return reply("⚠️ A game is already running. Type *endgame* to stop it.");
     }
-
-    const item = rand(TRIVIA);
 
     const sendCtx = (text) =>
       Prince.sendMessage(from, {
@@ -502,38 +516,55 @@ gmd(
         contextInfo: getContextInfo(sender, newsletterJid, botName),
       });
 
-    await sendCtx(
-      `❓ *TRIVIA*\n━━━━━━━━━━━━━━━━━━━━━━\n` +
-      `${item.q}\n\n` +
-      `First correct answer wins! You have *60s*.\n` +
-      `Type *.endgame* to skip.`
-    );
+    const state = { type: "trivia", scores: {}, current: null, timeout: null, handler: null };
 
-    const handler = async ({ messages }) => {
+    const askNext = async () => {
+      const item = rand(TRIVIA);
+      state.current = item;
+      await sendCtx(
+        `❓ *TRIVIA*\n━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `${item.q}\n\n` +
+        `Answer fast! *next* to skip, *endgame* to stop.`
+      );
+    };
+
+    state.handler = async ({ messages }) => {
       try {
         const m = messages[0];
         if (!m?.message || m.key.remoteJid !== from) return;
-        const txt = getText(m).toLowerCase();
-        if (!txt || txt.startsWith(".")) return;
+        const txt = getText(m).toLowerCase().trim();
+        if (!txt) return;
+
         const who = senderOf(m, from).split("@")[0];
-        if (txt === item.a || txt.includes(item.a)) {
+
+        if (txt === "endgame" || txt === ".endgame" || txt === "stopgame") {
+          const scoreList = Object.entries(state.scores)
+            .sort((a, b) => b[1] - a[1])
+            .map(([u, s], i) => `${i + 1}. @${u} — ${s} pt(s)`)
+            .join("\n") || "_No points scored._";
           endGame(Prince, from);
-          return sendCtx(`🎉 Correct! The answer was *${item.a}*.\n✅ Winner: @${who}`);
+          return sendCtx(`🛑 *TRIVIA ended!*\n\n🏆 *Scores:*\n${scoreList}`);
+        }
+        if (txt === "next" || txt === ".next" || txt === "skip") {
+          await sendCtx(`⏭️ Skipping! The answer was *${state.current?.a}*.`);
+          return askNext();
+        }
+
+        if (txt.startsWith(".")) return;
+
+        if (state.current && (txt === state.current.a || txt.includes(state.current.a))) {
+          state.scores[who] = (state.scores[who] || 0) + 1;
+          await sendCtx(`🎉 Correct @${who}! Answer: *${state.current.a}*\n📊 Your score: ${state.scores[who]} pt(s)\n\n_Next question..._`);
+          return askNext();
         }
       } catch (e) {
         console.error("Trivia error:", e);
       }
     };
 
-    const timeout = setTimeout(() => {
-      if (games.has(from)) {
-        endGame(Prince, from);
-        sendCtx(`⌛ *TRIVIA* timed out. The answer was *${item.a}*.`);
-      }
-    }, 60 * 1000);
-
-    games.set(from, { type: "trivia", handler, timeout });
-    Prince.ev.on("messages.upsert", handler);
+    games.set(from, state);
+    Prince.ev.on("messages.upsert", state.handler);
+    await askNext();
   }
 );
 

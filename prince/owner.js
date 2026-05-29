@@ -496,52 +496,68 @@ gmd({
   }
 });
 
-// Resolves the { lid, pnJid } pair for a contact, required by the new block protocol.
+// Resolves { lid, pnJid } for block. Uses groupMetadata for the lid<->pn mapping.
 // Returns { lid, pnJid } or { error: "..." } or null.
 async function resolveBlockTarget(conText, from, Prince) {
-  const { mentionedJid, quotedUser, q } = conText;
+  const { mentionedJid, quotedUser, q, groupMetadata, sender } = conText;
   let raw = (mentionedJid && mentionedJid[0]) || quotedUser || null;
   if (!raw && q) {
     const num = q.replace(/[^0-9]/g, "");
     if (num.length >= 8) raw = num + "@s.whatsapp.net";
   }
-  // In a private chat with no explicit target, act on the current chat
-  if (!raw && !from.endsWith("@g.us")) raw = from;
+  // In a private chat with no explicit target, act on the sender of the current chat
+  if (!raw && !from.endsWith("@g.us")) raw = sender || from;
   if (!raw) return null;
-  if (raw.endsWith("@g.us")) return null; // never block a group
+  if (raw.endsWith("@g.us")) return null;
 
   let lid = null;
   let pnJid = null;
 
-  // Case 1: we already have a LID
+  // Helper: look up the mapping in the group participants
+  const findInParticipants = (needle) => {
+    if (!groupMetadata?.participants) return null;
+    const needleNum = needle.split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+    return groupMetadata.participants.find((p) => {
+      const idNum = (p.id || "").split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+      const lidNum = (p.lid || "").split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+      const pnNum = (p.pn || "").split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+      return idNum === needleNum || lidNum === needleNum || pnNum === needleNum;
+    });
+  };
+
+  // Case 1: we have a @lid
   if (raw.endsWith("@lid")) {
     lid = raw.split("@")[0].replace(/[^0-9]/g, "") + "@lid";
-    // Try to find the matching phone number (pn)
-    if (Prince.getJidFromLid) {
+    // a) look up the pn in the participants
+    const found = findInParticipants(raw);
+    if (found?.pn) pnJid = found.pn.split(":")[0].replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+    // b) otherwise try getJidFromLid
+    if (!pnJid && Prince.getJidFromLid) {
       try {
         const resolved = await Prince.getJidFromLid(raw);
         if (resolved && resolved.endsWith("@s.whatsapp.net")) pnJid = resolved;
       } catch (e) {}
     }
   }
-  // Case 2: we have a phone-number @s.whatsapp.net (or just a number)
+  // Case 2: we have a phone number @s.whatsapp.net (or just a number)
   else {
     if (!raw.includes("@")) raw = raw + "@s.whatsapp.net";
     const num = raw.split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
     if (num.length < 8) return null;
     pnJid = num + "@s.whatsapp.net";
 
-    // Resolve the LID via onWhatsApp
-    if (typeof Prince.onWhatsApp === "function") {
+    // a) look up the lid in the participants
+    const found = findInParticipants(raw);
+    if (found?.lid) lid = found.lid.split("@")[0].replace(/[^0-9]/g, "") + "@lid";
+
+    // b) otherwise resolve via onWhatsApp
+    if (!lid && typeof Prince.onWhatsApp === "function") {
       try {
         const results = await Prince.onWhatsApp(num);
         if (Array.isArray(results) && results[0]) {
           const r = results[0];
           if (!r.exists) return { error: "__NOT_ON_WHATSAPP__" };
-          if (r.lid) {
-            lid = (typeof r.lid === "string" ? r.lid : "").split("@")[0].replace(/[^0-9]/g, "") + "@lid";
-          }
-          // some forks return the canonical jid
+          if (r.lid) lid = (typeof r.lid === "string" ? r.lid : "").split("@")[0].replace(/[^0-9]/g, "") + "@lid";
           if (r.jid && r.jid.endsWith("@s.whatsapp.net")) pnJid = r.jid;
         }
       } catch (e) {
@@ -555,28 +571,29 @@ async function resolveBlockTarget(conText, from, Prince) {
 }
 
 
-// Sends the block/unblock request with the NEW WhatsApp protocol.
-// Tries the LID+pn_jid format first, then fallbacks.
+// Sends the block/unblock request, trying several attribute combinations.
 async function applyBlockAction(Prince, target, action) {
   const S_WA = "s.whatsapp.net";
-
-  // Build the list of attempts (each attempt = item attrs)
   const attempts = [];
 
-  // Attempt 1: new protocol (jid=LID, pn_jid=number) — the current format
-  if (target.lid) {
-    const attrs = { action, jid: target.lid };
-    if (action === "block" && target.pnJid) attrs.pn_jid = target.pnJid;
-    attempts.push(attrs);
+  // 1. Full new protocol: jid=LID + pn_jid=number (most reliable for block)
+  if (target.lid && target.pnJid) {
+    attempts.push({ action, jid: target.lid, pn_jid: target.pnJid });
   }
-  // Attempt 2: old protocol (jid=number) — in case the server still accepts it
+  // 2. jid=LID only (especially for unblock)
+  if (target.lid) {
+    attempts.push({ action, jid: target.lid });
+  }
+  // 3. jid=number + pn_jid identical
+  if (target.pnJid) {
+    attempts.push({ action, jid: target.pnJid, pn_jid: target.pnJid });
+  }
+  // 4. Old protocol: jid=number only
   if (target.pnJid) {
     attempts.push({ action, jid: target.pnJid });
   }
 
-  if (attempts.length === 0) {
-    return { ok: false, error: "no valid target" };
-  }
+  if (attempts.length === 0) return { ok: false, error: "no valid target" };
 
   let lastError = null;
   for (const itemAttrs of attempts) {
@@ -590,7 +607,6 @@ async function applyBlockAction(Prince, target, action) {
     } catch (e) {
       lastError = e;
       const msg = e?.message || "";
-      // If the error is a serious network/server error (not a plain bad-request), stop
       if (!msg.includes("bad-request") && !msg.includes("not-authorized") && !msg.includes("item-not-found")) {
         break;
       }
@@ -681,6 +697,113 @@ gmd({
   );
 });
 
+// ─── CATALOG : fetch a WhatsApp Business account's product catalog ────────────
+gmd({
+  pattern: "catalog",
+  aliases: ["catalogue", "products", "shop"],
+  react: "🛍️",
+  category: "tools",
+  description: "Show the product catalog of a WhatsApp Business account.",
+}, async (from, Prince, conText) => {
+  const { q, reply, react, mek, quotedUser, mentionedJid, sender, isGroup, botName, newsletterJid } = conText;
+
+  // Determine the target JID
+  let targetJid = null;
+  if (mentionedJid && mentionedJid[0]) targetJid = mentionedJid[0];
+  else if (quotedUser) targetJid = quotedUser;
+  else if (q) {
+    const num = q.replace(/[^0-9]/g, "");
+    if (num.length >= 8) targetJid = num + "@s.whatsapp.net";
+  }
+  else if (!isGroup) targetJid = from; // in DM, the person's catalog
+
+  if (!targetJid) {
+    await react("❌");
+    return reply(
+      "🛍️ *Business Catalog*\n\n" +
+      "Usage:\n" +
+      "• `.catalog 237xxxxxxxx`\n" +
+      "• In reply to a message\n" +
+      "• By mention: `.catalog @user`"
+    );
+  }
+
+  // Normalize to @s.whatsapp.net
+  const num = targetJid.split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+  if (num.length < 8) {
+    await react("❌");
+    return reply("❌ Invalid number.");
+  }
+  targetJid = num + "@s.whatsapp.net";
+
+  await react("⏳");
+
+  try {
+    if (typeof Prince.getCatalog !== "function") {
+      await react("❌");
+      return reply("❌ Catalog feature is not available on this build.");
+    }
+
+    const result = await Prince.getCatalog({ jid: targetJid, limit: 30 });
+    const products = result?.products || [];
+
+    if (!products.length) {
+      await react("❌");
+      return reply(`❌ No products found for +${num}.\n_This account may not have a Business catalog, or it is private._`);
+    }
+
+    const maxShow = Math.min(products.length, 10);
+    await reply(
+      `🛍️ *CATALOG — +${num}*\n━━━━━━━━━━━━━━━━━━━━━━\n📦 ${products.length} product(s)\n\n_Showing the first ${maxShow}..._`
+    );
+
+    for (let i = 0; i < maxShow; i++) {
+      const p = products[i];
+      const price = p.price ? `${(p.price / 1000).toFixed(2)} ${p.currency || ""}`.trim() : "Price not listed";
+      const caption =
+        `🏷️ *${p.name || "Unnamed"}*\n\n` +
+        (p.description ? `${p.description}\n\n` : "") +
+        `💰 ${price}\n` +
+        (p.retailerId ? `🔖 Ref: ${p.retailerId}\n` : "") +
+        `\n> *${botName}*`;
+
+      const imgUrl = p.imageUrls && (p.imageUrls.original || p.imageUrls.requested || Object.values(p.imageUrls)[0]);
+
+      try {
+        if (imgUrl) {
+          await Prince.sendMessage(from, {
+            image: { url: imgUrl },
+            caption,
+            contextInfo: getContextInfo(sender, newsletterJid, botName),
+          }, { quoted: mek });
+        } else {
+          await Prince.sendMessage(from, {
+            text: caption,
+            contextInfo: getContextInfo(sender, newsletterJid, botName),
+          }, { quoted: mek });
+        }
+      } catch (sendErr) {
+        await reply(caption);
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+
+    if (products.length > maxShow) {
+      await reply(`_… and ${products.length - maxShow} more product(s) not shown._`);
+    }
+
+    await react("✅");
+  } catch (e) {
+    console.error("[CATALOG] error:", e);
+    await react("❌");
+    let msg = `❌ Error: ${e.message}`;
+    if ((e.message || "").includes("not-authorized") || (e.message || "").includes("forbidden")) {
+      msg = "❌ Catalog unavailable (private or non-business account).";
+    }
+    return reply(msg);
+  }
+});
+
 gmd({
   pattern: "mention",
   aliases: ["setmention", "mentionreply"],
@@ -688,28 +811,19 @@ gmd({
   react: "💬",
   description: "Configure an auto-reply triggered when the bot is mentioned/tagged.",
 }, async (from, Prince, conText) => {
-  const { reply, react, isSuperUser, q, getSetting, setSetting } = conText;
+  const { reply, react, isSuperUser, q, quotedMsg, getSetting, setSetting } = conText;
 
   if (!isSuperUser) return reply("❌ Owner Only Command!");
 
-  const input = (q || "").trim();
-  const cur = getSetting("MENTION_REPLY", "off");
-  const curText = getSetting("MENTION_REPLY_TEXT", "👋 Hello! Thanks for tagging me. The owner will get back to you soon.");
-
-  if (!input) {
-    return reply(
-      `💬 *MENTION AUTO-REPLY*\n\n` +
-      `📊 Status: ${cur === "on" ? "✅ ON" : "❌ OFF"}\n` +
-      `📝 Text: ${curText}\n\n` +
-      `*Usage:*\n` +
-      `.mention on — enable\n` +
-      `.mention off — disable\n` +
-      `.mention set <text> — set the reply text (also enables it)`
-    );
-  }
-
+  let input = (q || "").trim();
+  if (input.toLowerCase().startsWith("set ")) input = input.slice(4).trim();
   const lower = input.toLowerCase();
 
+  const cur = getSetting("MENTION_REPLY", "off");
+  const curType = getSetting("MENTION_REPLY_TYPE", "text");
+  const curVal = getSetting("MENTION_REPLY_VALUE", getSetting("MENTION_REPLY_TEXT", "👋 Hello! Thanks for tagging me. The owner will get back to you soon."));
+
+  // Toggle on/off
   if (lower === "on" || lower === "true" || lower === "enable") {
     setSetting("MENTION_REPLY", "on");
     await react("✅");
@@ -721,13 +835,54 @@ gmd({
     return reply("❎ Mention auto-reply is now *OFF*.");
   }
 
-  const text = lower.startsWith("set ") ? input.slice(4).trim() : input;
-  if (!text) return reply("❌ Please provide the reply text.\n\n*Example:* .mention set Hi, I'll reply soon!");
+  // Reply to a sticker -> store it as the auto-reply
+  if (quotedMsg?.stickerMessage) {
+    try {
+      const { downloadMediaMessage } = require("prince-baileys");
+      const buffer = await downloadMediaMessage({ message: quotedMsg }, "buffer", {});
+      const dataDir = path.join(__dirname, "..", "data");
+      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+      const stickerPath = path.join(dataDir, "mention-sticker.webp");
+      fs.writeFileSync(stickerPath, buffer);
+      setSetting("MENTION_REPLY_TYPE", "sticker");
+      setSetting("MENTION_REPLY_VALUE", stickerPath);
+      setSetting("MENTION_REPLY", "on");
+      await react("✅");
+      return reply("✅ Mention auto-reply set to the *sticker* and *enabled*.");
+    } catch (e) {
+      await react("❌");
+      return reply(`❌ Failed to save sticker: ${e.message}`);
+    }
+  }
 
-  setSetting("MENTION_REPLY_TEXT", text);
+  // No input and no sticker -> show status/help
+  if (!input) {
+    const typeLabel = curType === "url" ? "Media (URL)" : curType === "sticker" ? "Sticker" : "Text";
+    return reply(
+      `💬 *MENTION AUTO-REPLY*\n\n` +
+      `📊 Status: ${cur === "on" ? "✅ ON" : "❌ OFF"}\n` +
+      `🧩 Type: ${typeLabel}\n` +
+      `📝 Value: ${curType === "sticker" ? "(saved sticker)" : curVal}\n\n` +
+      `*Usage:*\n` +
+      `.mention on / off — enable/disable\n` +
+      `.mention set <text> — reply with text\n` +
+      `.mention set <url> — reply with media downloaded from the URL\n` +
+      `.mention (replying to a sticker) — reply with that sticker`
+    );
+  }
+
+  // URL -> media reply ; otherwise text reply
+  const isUrl = /^https?:\/\/\S+$/i.test(input);
+  setSetting("MENTION_REPLY_TYPE", isUrl ? "url" : "text");
+  setSetting("MENTION_REPLY_VALUE", input);
+  setSetting("MENTION_REPLY_TEXT", input); // backward-compat
   setSetting("MENTION_REPLY", "on");
   await react("✅");
-  return reply(`✅ Mention auto-reply text set and *enabled*:\n\n${text}`);
+  return reply(
+    isUrl
+      ? `✅ Mention auto-reply set to *media from URL* and *enabled*:\n\n${input}`
+      : `✅ Mention auto-reply *text* set and *enabled*:\n\n${input}`
+  );
 });
 
 gmd({
@@ -1767,99 +1922,153 @@ gmd({
 });
 
 
+// Sends a user's profile card (pic, about, last updated)
+async function sendUserProfile(Prince, from, conText, targetUser) {
+  const { mek, reply, react, timeZone, isGroup, botFooter } = conText;
+  let profilePictureUrl;
+  let statusText = "Not Found";
+  let setAt = "Not Available";
+
+  if (isGroup && targetUser.endsWith('@lid')) {
+    try {
+      const jid = await Prince.getJidFromLid(targetUser);
+      if (jid) targetUser = jid;
+    } catch (e) {}
+  }
+
+  try {
+    profilePictureUrl = await Prince.profilePictureUrl(targetUser, "image");
+  } catch (e) {
+    profilePictureUrl = "https://telegra.ph/file/9521e9ee2fdbd0d6f4f1c.jpg";
+  }
+
+  try {
+    const statusData = await Prince.fetchStatus(targetUser);
+    if (statusData && statusData.length > 0 && statusData[0].status) {
+      statusText = statusData[0].status.status || "Not Found";
+      setAt = statusData[0].status.setAt || "Not Available";
+    } else if (statusData?.status) {
+      statusText = statusData.status || "Not Found";
+      setAt = statusData.setAt || "Not Available";
+    }
+  } catch (e) {}
+
+  let formattedDate = "Not Available";
+  if (setAt && setAt !== "Not Available") {
+    try {
+      formattedDate = moment(setAt).tz(timeZone).format('dddd, MMMM Do YYYY, h:mm A z');
+    } catch (e) {}
+  }
+
+  const number = targetUser.replace(/@s\.whatsapp\.net$/, "").replace(/@lid$/, "");
+
+  await Prince.sendMessage(
+    from,
+    {
+      image: { url: profilePictureUrl },
+      caption: `*👤 User Profile Information*\n\n` +
+               `*• Name:* @${number}\n` +
+               `*• Number:* ${number}\n` +
+               `*• About:* ${statusText}\n` +
+               `*• Last Updated:* ${formattedDate}\n\n` +
+               `_${botFooter}_`,
+      mentions: [targetUser],
+      contextInfo: {
+        mentionedJid: [targetUser],
+        ...getContextInfo(targetUser, conText.newsletterJid, conText.botName),
+      },
+    },
+    { quoted: mek }
+  );
+  await react("✅");
+}
+
+// Sends the current group's information card
+async function sendGroupInfo(Prince, from, conText) {
+  const { mek, react, botFooter } = conText;
+  const meta = await Prince.groupMetadata(from);
+  const fmt = (jid) => (jid ? `@${jid.split("@")[0]}` : "N/A");
+  const admins = meta.participants.filter((p) => p.admin === "admin" || p.admin === "superadmin");
+
+  let pic;
+  try { pic = await Prince.profilePictureUrl(from, "image"); }
+  catch { pic = "https://telegra.ph/file/9521e9ee2fdbd0d6f4f1c.jpg"; }
+
+  const caption =
+    `*👥 Group Information*\n\n` +
+    `*• Name:* ${meta.subject || "N/A"}\n` +
+    `*• ID:* ${meta.id}\n` +
+    `*• Owner:* ${fmt(meta.ownerPn || meta.ownerJid || meta.owner)}\n` +
+    `*• Members:* ${meta.participants.length}\n` +
+    `*• Admins:* ${admins.length}\n` +
+    `*• Created:* ${meta.creation ? new Date(meta.creation * 1000).toLocaleString() : "N/A"}\n` +
+    `*• Description:* ${meta.desc || "None"}\n\n` +
+    `_${botFooter}_`;
+
+  await Prince.sendMessage(
+    from,
+    { image: { url: pic }, caption, contextInfo: getContextInfo(conText.sender, conText.newsletterJid, conText.botName) },
+    { quoted: mek }
+  );
+  await react("✅");
+}
+
 gmd({
   pattern: "whois",
   aliases: ['profile', 'profil', 'userinfo'],
   react: "👤",
   category: "owner",
-  description: "Get someone's full profile details.",
+  description: "User info (reply/mention). In a group with no target, shows group info.",
 }, async (from, Prince, conText) => {
-  const { mek, reply, react, sender, quoted, timeZone, isGroup, quotedMsg, newsletterJid, quotedUser, botName, botFooter, isSuperUser } = conText;
+  const { reply, react, sender, isGroup, quotedUser, mentionedJid, isSuperUser } = conText;
 
   if (!isSuperUser) {
     await react("❌");
     return reply(`Owner Only Command!`);
   }
 
-  // Use the replied/mentioned user when available, otherwise the sender.
-  let targetUser = quotedUser || conText.user || sender;
-
-  if (!targetUser) {
-    await react("❌");
-    return reply(`❌ Target not found. Reply to a message, mention a user, or run the command in a private chat.`);
-  }
-
-  let profilePictureUrl;
-  let statusText = "Not Found";
-  let setAt = "Not Available";
+  // Explicit target = a mentioned or replied user
+  const explicit = (mentionedJid && mentionedJid[0]) || quotedUser || null;
 
   try {
-    if (isGroup && targetUser.endsWith('@lid')) {
-      try {
-        const jid = await Prince.getJidFromLid(targetUser);
-        if (jid) targetUser = jid;
-      } catch (error) {
-        console.error("Error converting LID to JID:", error);
-      }
+    if (explicit) {
+      return await sendUserProfile(Prince, from, conText, explicit);
     }
-
-    try {
-      profilePictureUrl = await Prince.profilePictureUrl(targetUser, "image");
-    } catch (error) {
-      console.error("Error fetching profile picture:", error);
-      profilePictureUrl = "https://telegra.ph/file/9521e9ee2fdbd0d6f4f1c.jpg";
+    if (isGroup) {
+      return await sendGroupInfo(Prince, from, conText);
     }
-
-    try {
-      const statusData = await Prince.fetchStatus(targetUser);
-
-      if (statusData && statusData.length > 0 && statusData[0].status) {
-        statusText = statusData[0].status.status || "Not Found";
-        setAt = statusData[0].status.setAt || "Not Available";
-      } else if (statusData?.status) {
-        statusText = statusData.status || "Not Found";
-        setAt = statusData.setAt || "Not Available";
-      }
-    } catch (error) {
-      console.error("Error fetching status:", error);
-    }
-
-    let formattedDate = "Not Available";
-    if (setAt && setAt !== "Not Available") {
-      try {
-        formattedDate = moment(setAt)
-          .tz(timeZone)
-          .format('dddd, MMMM Do YYYY, h:mm A z');
-      } catch (e) {
-        console.error("Error formatting date:", e);
-      }
-    }
-
-    const number = targetUser.replace(/@s\.whatsapp\.net$/, "").replace(/@lid$/, "");
-
-    await Prince.sendMessage(
-      from,
-      {
-        image: { url: profilePictureUrl },
-        caption: `*👤 User Profile Information*\n\n` +
-                 `*• Name:* @${number}\n` +
-                 `*• Number:* ${number}\n` +
-                 `*• About:* ${statusText}\n` +
-                 `*• Last Updated:* ${formattedDate}\n\n` +
-                 `_${botFooter}_`,
-        mentions: [targetUser],
-        contextInfo: {
-          mentionedJid: [targetUser],
-          ...getContextInfo(targetUser, conText.newsletterJid, conText.botName),
-        },
-      },
-      { quoted: mek }
-    );
-    await react("✅");
+    // DM with no target -> your own profile
+    return await sendUserProfile(Prince, from, conText, sender);
   } catch (error) {
     console.error("Error in whois command:", error);
-    await reply(`❌ An error occurred while fetching profile information.\nError: ${error.message}`);
     await react("❌");
+    return reply(`❌ An error occurred while fetching information.\nError: ${error.message}`);
+  }
+});
+
+gmd({
+  pattern: "whoisp",
+  aliases: ['myinfo', 'me', 'mywhois'],
+  react: "👤",
+  category: "owner",
+  description: "Show your own profile info (works anywhere).",
+}, async (from, Prince, conText) => {
+  const { reply, react, sender, quotedUser, mentionedJid, isSuperUser } = conText;
+
+  if (!isSuperUser) {
+    await react("❌");
+    return reply(`Owner Only Command!`);
+  }
+
+  // Reply/mention -> that person; otherwise -> yourself
+  const target = (mentionedJid && mentionedJid[0]) || quotedUser || sender;
+
+  try {
+    return await sendUserProfile(Prince, from, conText, target);
+  } catch (error) {
+    console.error("Error in whoisp command:", error);
+    await react("❌");
+    return reply(`❌ An error occurred while fetching profile information.\nError: ${error.message}`);
   }
 });
 

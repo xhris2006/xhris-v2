@@ -419,31 +419,64 @@ async function startPrince() {
                 });
                 if (!isBotMentioned) return;
 
-                const replyText = getSetting(
-                    "MENTION_REPLY_TEXT",
-                    "👋 Hello! Thanks for tagging me. The owner will get back to you soon.",
-                );
                 const replyTo =
                     message.key.senderPn ||
                     message.key.participantPn ||
                     message.key.participant ||
                     message.key.remoteJid;
 
-                await Prince.sendMessage(
-                    message.key.remoteJid,
-                    {
-                        text: replyText,
-                        mentions: [replyTo],
-                        contextInfo: {
-                            mentionedJid: [replyTo],
-                            ...createContext(replyTo, {
-                                title: getSetting("BOT_NAME", botName),
-                                body: "Mention Auto-Reply",
-                            }).contextInfo,
-                        },
-                    },
-                    { quoted: message },
+                const type = getSetting("MENTION_REPLY_TYPE", "text");
+                const value = getSetting(
+                    "MENTION_REPLY_VALUE",
+                    getSetting("MENTION_REPLY_TEXT", "👋 Hello! Thanks for tagging me. The owner will get back to you soon."),
                 );
+
+                const baseCtx = {
+                    mentionedJid: [replyTo],
+                    ...createContext(replyTo, {
+                        title: getSetting("BOT_NAME", botName),
+                        body: "Mention Auto-Reply",
+                    }).contextInfo,
+                };
+                const target = message.key.remoteJid;
+
+                if (type === "sticker") {
+                    // Reply with the saved sticker file
+                    try {
+                        if (value && fs.existsSync(value)) {
+                            await Prince.sendMessage(target, { sticker: fs.readFileSync(value) }, { quoted: message });
+                        } else {
+                            await Prince.sendMessage(target, { text: "👋", contextInfo: baseCtx }, { quoted: message });
+                        }
+                    } catch (e) {
+                        console.log("[MENTION] sticker reply failed:", e.message);
+                    }
+                } else if (type === "url") {
+                    // Download the media from the URL and reply with it
+                    try {
+                        const res = await axios.get(value, { responseType: "arraybuffer", timeout: 60000, validateStatus: () => true });
+                        const ct = res.headers["content-type"] || "";
+                        const buf = Buffer.from(res.data);
+                        if (ct.startsWith("image/")) {
+                            await Prince.sendMessage(target, { image: buf, contextInfo: baseCtx }, { quoted: message });
+                        } else if (ct.startsWith("video/")) {
+                            await Prince.sendMessage(target, { video: buf, contextInfo: baseCtx }, { quoted: message });
+                        } else if (ct.startsWith("audio/")) {
+                            await Prince.sendMessage(target, { audio: buf, mimetype: "audio/mp4", contextInfo: baseCtx }, { quoted: message });
+                        } else {
+                            await Prince.sendMessage(target, { text: value, contextInfo: baseCtx }, { quoted: message });
+                        }
+                    } catch (e) {
+                        console.log("[MENTION] url reply failed:", e.message);
+                        await Prince.sendMessage(target, { text: value, contextInfo: baseCtx }, { quoted: message });
+                    }
+                } else {
+                    await Prince.sendMessage(
+                        target,
+                        { text: value, mentions: [replyTo], contextInfo: baseCtx },
+                        { quoted: message },
+                    );
+                }
             } catch (err) {
                 console.error("Mention auto-reply error:", err);
             }
@@ -1081,6 +1114,7 @@ async function startPrince() {
                             mentionedJid,
                             isGroup,
                             groupInfo,
+                            groupMetadata: groupInfo,
                             groupName,
                             getSudoNumbers,
                             getSetting,
