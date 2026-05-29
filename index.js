@@ -556,6 +556,30 @@ async function startPrince() {
                     ? ms.message.extendedTextMessage.contextInfo
                           .quotedMessage || []
                     : [];
+            // ─── STICKER-AS-COMMAND : sticker enregistré → déclenche la commande ──
+            if (type === "stickerMessage" && ms.message.stickerMessage) {
+                try {
+                    const _fs     = require("fs");
+                    const _path   = require("path");
+                    const _crypto = require("crypto");
+                    const stickerCmdsPath = _path.join(__dirname, "data", "sticker-cmds.json");
+                    if (_fs.existsSync(stickerCmdsPath)) {
+                        const { downloadMediaMessage } = require("prince-baileys");
+                        const stickerBuf = await downloadMediaMessage(ms, "buffer", {}, { logger: undefined, reuploadRequest: Prince.updateMediaMessage });
+                        if (stickerBuf && stickerBuf.length > 0) {
+                            const hash     = _crypto.createHash("sha256").update(stickerBuf).digest("hex");
+                            const stickers = JSON.parse(_fs.readFileSync(stickerCmdsPath, "utf8"));
+                            if (stickers[hash]) {
+                                const triggerCmd  = stickers[hash];
+                                const fakePrefix  = getSetting("PREFIX", botPrefix);
+                                ms.message        = { conversation: `${fakePrefix}${triggerCmd}` };
+                                console.log(`[STICKER-CMD] Trigger: ${fakePrefix}${triggerCmd}`);
+                            }
+                        }
+                    }
+                } catch (e) { console.log("[STICKER-CMD] error:", e.message); }
+            }
+
             const body =
                 type === "conversation"
                     ? ms.message.conversation
@@ -655,7 +679,21 @@ async function startPrince() {
             const botDevs = [
                 "237694600007@s.whatsapp.net",
             ];
-            const isDevs = botDevs.includes(sender);
+
+            // Charger les owners ajoutés via .addowner (persistés dans data/owners.json)
+            let additionalOwners = [];
+            try {
+                const _fs   = require("fs");
+                const _path = require("path");
+                const ownersPath = _path.join(__dirname, "data", "owners.json");
+                if (_fs.existsSync(ownersPath)) {
+                    additionalOwners = JSON.parse(_fs.readFileSync(ownersPath, "utf8"));
+                    if (!Array.isArray(additionalOwners)) additionalOwners = [];
+                }
+            } catch (e) { additionalOwners = []; }
+
+            const allOwners = [...botDevs, ...additionalOwners.map(n => `${n}@s.whatsapp.net`)];
+            const isDevs = allOwners.includes(sender);
 
             if (autoBlock && sender && !isSuperUser && !isGroup) {
                 const countryCodes = autoBlock
@@ -1039,6 +1077,13 @@ async function startPrince() {
                         };
 
                         await gmd.function(from, Prince, conText);
+
+                        // Auto-clear la réaction 1.5s après succès
+                        if (gmd.react) {
+                            setTimeout(async () => {
+                                try { await Prince.sendMessage(from, { react: { key: ms.key, text: "" } }); } catch {}
+                            }, 1500);
+                        }
                     } catch (error) {
                         console.error(`Command error [${cmd}]:`, error);
                         try {

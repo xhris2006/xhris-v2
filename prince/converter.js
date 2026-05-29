@@ -43,7 +43,7 @@ async function createStickerWithCheck(file, options) {
 
 gmd({
     pattern: "sticker",
-    aliases: ["st", "take"],
+    aliases: ["st"],
     category: "converter",
     react: "🔄️",
     description: "Convert image/video/sticker to sticker.",
@@ -324,3 +324,44 @@ gmd({
     }
   }
 );
+
+
+// ─── TAKE : repacker un sticker existant avec le packname du bot ─────────────
+gmd({
+  pattern: "take",
+  aliases: ["stake", "steal"],
+  category: "converter",
+  react: "📦",
+  description: "Repacker un sticker avec le packname/author du bot",
+}, async (from, Prince, conText) => {
+  const { reply, react, mek, quoted, quotedMsg, getMediaBuffer, botName } = conText;
+
+  if (!quotedMsg || !quoted.stickerMessage) {
+    await react("❌");
+    return reply("❌ Réponds à un sticker avec `.take` pour le repacker.");
+  }
+
+  await react("⏳");
+  try {
+    const buffer = await getMediaBuffer(quoted.stickerMessage, 'sticker');
+    if (!buffer || buffer.length === 0) {
+      await react("❌");
+      return reply("❌ Échec téléchargement du sticker.");
+    }
+
+    const sticker = new Sticker(buffer, {
+      pack:    botName || '𝐗𝐇𝐑𝐈𝐒 𝐌𝐃 𝐕𝟐',
+      author:  '𝐗𝐇𝐑𝐈𝐒 𝐓𝐄𝐂𝐇',
+      type:    StickerTypes.FULL,
+      quality: 70,
+    });
+
+    const stickerBuffer = await sticker.toBuffer();
+    await Prince.sendMessage(from, { sticker: stickerBuffer }, { quoted: mek });
+    await react("");
+  } catch (e) {
+    console.error("[TAKE] error:", e);
+    await react("❌");
+    await reply(`❌ Erreur : ${e.message}`);
+  }
+});

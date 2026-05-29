@@ -65,10 +65,10 @@ gmd({
 ${readmore}\n`;
 
     const formatCategory = (category, gmds) => {
-        const title = `\n┌─「 ${category.toUpperCase()} 」\n`;
+        const title = `┌─「 ${category.toUpperCase()} 」\n`;
         const body = gmds.map(g => `│ ◦ ${g}`).join('\n');
-        const footer = `\n└──`;
-        return `${title}${body}${footer}\n`;
+        const footer = `\n└──\n`;
+        return `${title}${body}${footer}`;
     };
 
     let menu = header;
