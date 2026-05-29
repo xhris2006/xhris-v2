@@ -496,6 +496,7 @@ gmd({
   }
 });
 
+// Returns { candidates: [...jids to try] } or { error: "..." } or null
 async function resolveBlockTarget(conText, from, Prince) {
   const { mentionedJid, quotedUser, q } = conText;
   let target = (mentionedJid && mentionedJid[0]) || quotedUser || null;
@@ -506,39 +507,62 @@ async function resolveBlockTarget(conText, from, Prince) {
   // In a private chat with no explicit target, act on the current chat
   if (!target && !from.endsWith("@g.us")) target = from;
   if (!target) return null;
+  if (target.endsWith("@g.us")) return null; // never block a group
 
-  // Resolve LID -> real JID when possible (group replies can return @lid)
-  if (target.endsWith("@lid") && Prince.getJidFromLid) {
-    try {
-      const resolved = await Prince.getJidFromLid(target);
-      if (resolved) target = resolved;
-    } catch (e) {}
+  const candidates = [];
+
+  // If we got a @lid, try to resolve it to a real JID, but KEEP the lid too
+  if (target.endsWith("@lid")) {
+    candidates.push(target); // the lid itself is a valid block candidate
+    if (Prince.getJidFromLid) {
+      try {
+        const resolved = await Prince.getJidFromLid(target);
+        if (resolved && !candidates.includes(resolved)) candidates.push(resolved);
+      } catch (e) {}
+    }
   }
 
-  // Normalize to a phone-number JID
+  // Normalize to a phone-number JID if there is no @
   if (!target.includes("@")) target = target + "@s.whatsapp.net";
 
-  // CRITICAL FIX: verify the number on WhatsApp to get the canonical JID.
-  // Building "number@s.whatsapp.net" manually causes "bad-request" on updateBlockStatus.
+  // If it is a phone-number JID, verify via onWhatsApp to get canonical jid + lid
   if (target.endsWith("@s.whatsapp.net") && typeof Prince.onWhatsApp === "function") {
     try {
       const num = target.split("@")[0].replace(/[^0-9]/g, "");
       const results = await Prince.onWhatsApp(num);
       if (Array.isArray(results) && results[0]) {
-        if (results[0].exists === false) {
-          return "__NOT_ON_WHATSAPP__";
-        }
-        if (results[0].jid) {
-          target = results[0].jid;
-        }
+        const r = results[0];
+        if (!r.exists) return { error: "__NOT_ON_WHATSAPP__" };
+        if (r.jid && !candidates.includes(r.jid)) candidates.push(r.jid);
+        if (r.lid && !candidates.includes(r.lid)) candidates.push(r.lid);
       }
     } catch (e) {
-      // If onWhatsApp fails, keep the constructed JID as fallback
       console.log("[BLOCK] onWhatsApp check failed:", e.message);
     }
   }
 
-  return target;
+  // Always include the constructed target as a last resort
+  if (!candidates.includes(target)) candidates.push(target);
+
+  if (candidates.length === 0) return null;
+  return { candidates };
+}
+
+
+// Tries to block/unblock by testing each candidate until one succeeds.
+// Returns { ok: true, jid } or { ok: false, error }
+async function applyBlockAction(Prince, candidates, action) {
+  let lastError = null;
+  for (const jid of candidates) {
+    try {
+      await Prince.updateBlockStatus(jid, action);
+      return { ok: true, jid };
+    } catch (e) {
+      lastError = e;
+      // Try the next candidate
+    }
+  }
+  return { ok: false, error: lastError ? lastError.message : "unknown error" };
 }
 
 gmd({
@@ -547,36 +571,38 @@ gmd({
   category: "owner",
   description: "Block a user (reply, mention, number, or in their DM).",
 }, async (from, Prince, conText) => {
-  const { reply, react, isSuperUser, mek, sender, botName, newsletterJid } = conText;
+  const { reply, react, isSuperUser, mek, botName, newsletterJid } = conText;
 
   if (!isSuperUser) return reply("❌ Owner Only Command!");
 
-  const target = await resolveBlockTarget(conText, from, Prince);
-  if (target === "__NOT_ON_WHATSAPP__") {
+  const result = await resolveBlockTarget(conText, from, Prince);
+
+  if (result && result.error === "__NOT_ON_WHATSAPP__") {
     await react("❌");
     return reply("❌ This number is not registered on WhatsApp.");
   }
-  if (!target || target.endsWith("@g.us") || target.endsWith("@lid")) {
+  if (!result || !result.candidates || result.candidates.length === 0) {
     await react("❌");
     return reply("❌ Reply to, mention, or provide the number of the user to block.\n\n*Example:* .block 254712345678");
   }
 
-  try {
-    await Prince.updateBlockStatus(target, "block");
-    await react("✅");
-    await Prince.sendMessage(
-      from,
-      {
-        text: `🚫 Successfully blocked @${target.split("@")[0]}.`,
-        mentions: [target],
-        contextInfo: { mentionedJid: [target], ...getContextInfo(target, newsletterJid, botName) },
-      },
-      { quoted: mek },
-    );
-  } catch (error) {
+  const outcome = await applyBlockAction(Prince, result.candidates, "block");
+  if (!outcome.ok) {
     await react("❌");
-    return reply(`❌ Failed to block user: ${error.message}`);
+    return reply(`❌ Failed to block user: ${outcome.error}`);
   }
+
+  await react("✅");
+  const shown = outcome.jid.split("@")[0];
+  await Prince.sendMessage(
+    from,
+    {
+      text: `🚫 Successfully blocked @${shown}.`,
+      mentions: [outcome.jid],
+      contextInfo: { mentionedJid: [outcome.jid], ...getContextInfo(outcome.jid, newsletterJid, botName) },
+    },
+    { quoted: mek },
+  );
 });
 
 gmd({
@@ -585,36 +611,38 @@ gmd({
   category: "owner",
   description: "Unblock a user (reply, mention, number, or in their DM).",
 }, async (from, Prince, conText) => {
-  const { reply, react, isSuperUser, mek, sender, botName, newsletterJid } = conText;
+  const { reply, react, isSuperUser, mek, botName, newsletterJid } = conText;
 
   if (!isSuperUser) return reply("❌ Owner Only Command!");
 
-  const target = await resolveBlockTarget(conText, from, Prince);
-  if (target === "__NOT_ON_WHATSAPP__") {
+  const result = await resolveBlockTarget(conText, from, Prince);
+
+  if (result && result.error === "__NOT_ON_WHATSAPP__") {
     await react("❌");
     return reply("❌ This number is not registered on WhatsApp.");
   }
-  if (!target || target.endsWith("@g.us") || target.endsWith("@lid")) {
+  if (!result || !result.candidates || result.candidates.length === 0) {
     await react("❌");
     return reply("❌ Reply to, mention, or provide the number of the user to unblock.\n\n*Example:* .unblock 254712345678");
   }
 
-  try {
-    await Prince.updateBlockStatus(target, "unblock");
-    await react("✅");
-    await Prince.sendMessage(
-      from,
-      {
-        text: `✅ Successfully unblocked @${target.split("@")[0]}.`,
-        mentions: [target],
-        contextInfo: { mentionedJid: [target], ...getContextInfo(target, newsletterJid, botName) },
-      },
-      { quoted: mek },
-    );
-  } catch (error) {
+  const outcome = await applyBlockAction(Prince, result.candidates, "unblock");
+  if (!outcome.ok) {
     await react("❌");
-    return reply(`❌ Failed to unblock user: ${error.message}`);
+    return reply(`❌ Failed to unblock user: ${outcome.error}`);
   }
+
+  await react("✅");
+  const shown = outcome.jid.split("@")[0];
+  await Prince.sendMessage(
+    from,
+    {
+      text: `✅ Successfully unblocked @${shown}.`,
+      mentions: [outcome.jid],
+      contextInfo: { mentionedJid: [outcome.jid], ...getContextInfo(outcome.jid, newsletterJid, botName) },
+    },
+    { quoted: mek },
+  );
 });
 
 gmd({
