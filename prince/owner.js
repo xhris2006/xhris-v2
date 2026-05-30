@@ -7,6 +7,24 @@ const path = require("path");
 const { exec, spawn } = require('node:child_process');
 const moment = require('moment-timezone');
 
+// ── Call tracking (for .call / .endcall) ─────────────────────────────────────
+const activeCalls = new Map();   // callId -> { id, from }
+let lastOutgoingCall = null;     // { id, from } of the last call we placed
+let callListenerAttached = false;
+function trackCalls(Prince) {
+  if (callListenerAttached) return;
+  callListenerAttached = true;
+  Prince.ev.on("call", (calls) => {
+    for (const c of calls || []) {
+      if (c.status === "offer" || c.status === "ringing") {
+        activeCalls.set(c.id, { id: c.id, from: c.from });
+      } else if (["terminate", "reject", "timeout", "accept"].includes(c.status)) {
+        activeCalls.delete(c.id);
+      }
+    }
+  });
+}
+
 gmd({
   pattern: "channelid",
   aliases: ["getchannelid", "chid"],
@@ -2136,7 +2154,7 @@ gmd({
   category: "owner",
   description: "User info (reply/mention). In a group with no target, shows group info.",
 }, async (from, Prince, conText) => {
-  const { reply, react, sender, isGroup, quotedUser, mentionedJid, isSuperUser } = conText;
+  const { reply, react, sender, isGroup, quotedUser, mentionedJid, isSuperUser, quotedMsg } = conText;
 
   if (!isSuperUser) {
     await react("❌");
@@ -2144,7 +2162,15 @@ gmd({
   }
 
   // Explicit target = a mentioned or replied user
-  const explicit = (mentionedJid && mentionedJid[0]) || quotedUser || null;
+  let explicit = (mentionedJid && mentionedJid[0]) || quotedUser || null;
+
+  // DM reply fix: in a 1-on-1 chat WhatsApp often omits the quoted participant,
+  // leaving no target — so whois wrongly showed your own profile. The only other
+  // party in a DM is the chat itself, so target that person.
+  if (!isGroup && quotedMsg && from.endsWith("@s.whatsapp.net") &&
+      (!explicit || String(explicit).endsWith("@lid"))) {
+    explicit = from;
+  }
 
   try {
     if (explicit) {
@@ -2185,6 +2211,225 @@ gmd({
     console.error("Error in whoisp command:", error);
     await react("❌");
     return reply(`❌ An error occurred while fetching profile information.\nError: ${error.message}`);
+  }
+});
+
+gmd({
+  pattern: "call",
+  aliases: ["startcall", "ring"],
+  react: "📞",
+  category: "owner",
+  description: "Place a call to a number / replied / mentioned user. Add 'video' for a video call.",
+}, async (from, Prince, conText) => {
+  const { q, reply, react, isSuperUser, isGroup, mentionedJid, quotedUser } = conText;
+
+  if (!isSuperUser) {
+    await react("❌");
+    return reply(`Owner Only Command!`);
+  }
+
+  trackCalls(Prince);
+
+  // Resolve the target JID: mention > reply > number in text > DM partner
+  let target = (mentionedJid && mentionedJid[0]) || quotedUser || null;
+  if (!target && q) {
+    const num = q.replace(/[^0-9]/g, "");
+    if (num.length >= 7) target = num + "@s.whatsapp.net";
+  }
+  if (!target && !isGroup && from.endsWith("@s.whatsapp.net")) target = from;
+
+  if (!target) {
+    await react("❌");
+    return reply("📞 Provide a number, mention or reply to call.\n\n*Usage:* .call <number> | reply to a message | @mention\n*Video:* .call <number> video");
+  }
+
+  if (typeof Prince.offerCall !== "function") {
+    await react("❌");
+    return reply("❌ This WhatsApp/Baileys build does not support placing calls (offerCall unavailable).");
+  }
+
+  const isVideo = /\b(video|vid|cam)\b/i.test(q || "");
+
+  try {
+    const info = await Prince.offerCall(target, isVideo);
+    const callId = info?.id || info?.callId || null;
+    lastOutgoingCall = { id: callId, from: target };
+    if (callId) activeCalls.set(callId, lastOutgoingCall);
+    await react("✅");
+    return reply(`📞 ${isVideo ? "Video calling" : "Calling"} *${target.split("@")[0]}*...\n\nUse *.endcall* to hang up.`);
+  } catch (e) {
+    console.error("call error:", e);
+    await react("❌");
+    return reply("❌ Failed to place the call: " + e.message);
+  }
+});
+
+gmd({
+  pattern: "endcall",
+  aliases: ["hangup", "stopcall", "rejectcall"],
+  react: "📵",
+  category: "owner",
+  description: "Hang up / reject the current call.",
+}, async (from, Prince, conText) => {
+  const { reply, react, isSuperUser } = conText;
+
+  if (!isSuperUser) {
+    await react("❌");
+    return reply(`Owner Only Command!`);
+  }
+
+  trackCalls(Prince);
+
+  const candidates = [...activeCalls.values()];
+  if (lastOutgoingCall?.id && !candidates.some((c) => c.id === lastOutgoingCall.id)) {
+    candidates.push(lastOutgoingCall);
+  }
+
+  if (candidates.length === 0) {
+    await react("❌");
+    return reply("📵 No active call to hang up.");
+  }
+
+  let ended = 0;
+  for (const c of candidates) {
+    if (!c?.id || !c?.from) continue;
+    try {
+      if (typeof Prince.terminateCall === "function") {
+        await Prince.terminateCall(c.id, c.from);
+      } else if (typeof Prince.rejectCall === "function") {
+        await Prince.rejectCall(c.id, c.from);
+      }
+      ended++;
+      activeCalls.delete(c.id);
+    } catch (e) {
+      console.error("endcall error:", e);
+    }
+  }
+  lastOutgoingCall = null;
+
+  await react(ended ? "✅" : "❌");
+  return reply(ended ? `📵 Ended ${ended} call(s).` : "❌ Failed to end the call.");
+});
+
+gmd({
+  pattern: "ephemeral",
+  aliases: ["disappear", "disappearing", "vanish"],
+  react: "⏳",
+  category: "owner",
+  description: "Toggle disappearing messages for this chat (off / 24h / 7d / 90d).",
+}, async (from, Prince, conText) => {
+  const { q, reply, react, isSuperUser } = conText;
+
+  if (!isSuperUser) {
+    await react("❌");
+    return reply(`Owner Only Command!`);
+  }
+
+  const arg = (q || "").trim().toLowerCase();
+  const map = {
+    "off": 0, "0": 0, "false": 0, "disable": 0, "stop": 0,
+    "24h": 86400, "24": 86400, "1d": 86400, "day": 86400,
+    "": 604800, "on": 604800, "7d": 604800, "7": 604800, "week": 604800,
+    "90d": 7776000, "90": 7776000, "3months": 7776000,
+  };
+
+  if (!(arg in map)) {
+    await react("❌");
+    return reply("⏳ *Disappearing Messages*\n\n*Usage:*\n• *.ephemeral on* / *7d* — 7 days\n• *.ephemeral 24h* — 24 hours\n• *.ephemeral 90d* — 90 days\n• *.ephemeral off* — disable");
+  }
+
+  const duration = map[arg];
+  try {
+    await Prince.sendMessage(from, { disappearingMessagesInChat: duration === 0 ? false : duration });
+    await react("✅");
+    const label = duration === 86400 ? "24 hours" : duration === 604800 ? "7 days" : duration === 7776000 ? "90 days" : "";
+    return reply(duration === 0
+      ? "⏳ Disappearing messages *disabled* for this chat."
+      : `⏳ Disappearing messages *enabled* (${label}) for this chat.`);
+  } catch (e) {
+    console.error("ephemeral error:", e);
+    await react("❌");
+    return reply("❌ Failed to update disappearing messages: " + e.message);
+  }
+});
+
+// Builds the WhatsApp message key of the quoted/replied message
+function quotedKey(Prince, conText, from, isGroup) {
+  const ci = conText.mek?.message?.extendedTextMessage?.contextInfo;
+  if (!ci?.stanzaId) return null;
+  const botNum = (Prince.user?.id || "").split(":")[0].split("@")[0];
+  const partNum = (ci.participant || "").split(":")[0].split("@")[0];
+  return {
+    remoteJid: from,
+    fromMe: !!(botNum && partNum && botNum === partNum),
+    id: ci.stanzaId,
+    ...(isGroup && ci.participant ? { participant: ci.participant } : {}),
+  };
+}
+
+gmd({
+  pattern: "pin",
+  aliases: ["pinmsg", "pinchat"],
+  react: "📌",
+  category: "owner",
+  description: "Pin the replied message (reply + .pin [24h/7d/30d]).",
+}, async (from, Prince, conText) => {
+  const { q, reply, react, isSuperUser, isGroup } = conText;
+
+  if (!isSuperUser) {
+    await react("❌");
+    return reply(`Owner Only Command!`);
+  }
+
+  const key = quotedKey(Prince, conText, from, isGroup);
+  if (!key) {
+    await react("❌");
+    return reply("📌 Reply to the message you want to pin.");
+  }
+
+  const timeMap = { "": 86400, "24h": 86400, "1d": 86400, "7d": 604800, "week": 604800, "30d": 2592000, "month": 2592000 };
+  const arg = (q || "").trim().toLowerCase();
+  const time = timeMap[arg] ?? 86400;
+
+  try {
+    await Prince.sendMessage(from, { pin: key, type: 1, time });
+    await react("✅");
+    return reply("📌 Message pinned.");
+  } catch (e) {
+    console.error("pin error:", e);
+    await react("❌");
+    return reply("❌ Failed to pin the message: " + e.message);
+  }
+});
+
+gmd({
+  pattern: "unpin",
+  aliases: ["unpinmsg", "removepin"],
+  react: "📍",
+  category: "owner",
+  description: "Unpin the replied message (reply + .unpin).",
+}, async (from, Prince, conText) => {
+  const { reply, react, isSuperUser, isGroup } = conText;
+
+  if (!isSuperUser) {
+    await react("❌");
+    return reply(`Owner Only Command!`);
+  }
+
+  const key = quotedKey(Prince, conText, from, isGroup);
+  if (!key) {
+    await react("❌");
+    return reply("📍 Reply to the pinned message you want to unpin.");
+  }
+
+  try {
+    await Prince.sendMessage(from, { pin: key, type: 2 });
+    await react("✅");
+    return reply("📍 Message unpinned.");
+  } catch (e) {
+    console.error("unpin error:", e);
+    await react("❌");
+    return reply("❌ Failed to unpin the message: " + e.message);
   }
 });
 

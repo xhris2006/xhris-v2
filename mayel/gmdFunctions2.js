@@ -6,6 +6,7 @@ const { createContext } = require("./gmdHelpers");
 const { getSetting, addWarning, resetWarnings } = require("./gmdSudoUtil");
 const logger = require("prince-baileys/lib/Utils/logger").default.child({});
 const { isJidGroup, downloadMediaMessage, getContentType } = require("prince-baileys");
+const axios = require("axios");
 
 const {
     CHATBOT: chatBot,
@@ -114,12 +115,97 @@ const PrinceAutoBio = async (Prince) => {
 };
 
 function PrinceChatBot(Prince, chatBot, chatBotMode, createContext, createContext2, googleTTS) {
-    Prince.ev.on("messages.upsert", async ({ messages }) => {
+    Prince.ev.on("messages.upsert", async ({ messages, type }) => {
         try {
+            if (type && type !== "notify") return;
             const msg = messages[0];
             if (!msg?.message || msg.key.fromMe) return;
-            // Simplified for stability
-        } catch (e) {}
+
+            const from = msg.key.remoteJid;
+            if (!from || from === "status@broadcast" || from.endsWith("@newsletter")) return;
+
+            // Live settings (overridable via .setchatbot / .setchatbotmode)
+            const mode = String(getSetting("CHATBOT", chatBot || "false")).toLowerCase();
+            if (["false", "off", "", "no", "0"].includes(mode)) return;
+
+            const scope = String(getSetting("CHATBOT_MODE", chatBotMode || "inbox")).toLowerCase();
+            const isGroup = from.endsWith("@g.us");
+            if (scope === "inbox" && isGroup) return;
+            if (scope === "groups" && !isGroup) return;
+            // "allchats" → respond everywhere
+
+            // Extract the text body
+            const mtype = getContentType(msg.message);
+            let body =
+                mtype === "conversation" ? msg.message.conversation :
+                mtype === "extendedTextMessage" ? msg.message.extendedTextMessage?.text :
+                mtype === "imageMessage" ? msg.message.imageMessage?.caption :
+                mtype === "videoMessage" ? msg.message.videoMessage?.caption : "";
+            body = (body || "").trim();
+            if (!body) return;
+
+            // Ignore bot commands
+            const prefix = String(getSetting("PREFIX", config.PREFIX || "."));
+            if (prefix && body.startsWith(prefix)) return;
+
+            const botNum = (Prince.user?.id || "").split(":")[0].split("@")[0];
+
+            // In groups, only reply when the bot is mentioned or its message is replied to
+            if (isGroup) {
+                const ci = msg.message?.extendedTextMessage?.contextInfo;
+                const mentioned = (ci?.mentionedJid || []).some((j) => j.includes(botNum));
+                const repliedToBot = ci?.participant ? ci.participant.includes(botNum) : false;
+                if (!mentioned && !repliedToBot) return;
+                body = body.replace(/@\d+/g, "").trim();
+                if (!body) return;
+            }
+
+            try { await Prince.sendPresenceUpdate("composing", from); } catch (e) {}
+
+            // Query the AI
+            let answer = "";
+            try {
+                const res = await axios.get(`${PrinceTechApi}/api/ai/gpt`, {
+                    params: { apikey: PrinceApiKey, q: body },
+                    timeout: 30000,
+                });
+                const d = res.data;
+                answer = d?.result || d?.response || d?.answer || d?.text || d?.data || "";
+            } catch (e) {
+                answer = "";
+            }
+            if (!answer || typeof answer !== "string") return;
+
+            // Voice reply when CHATBOT is set to audio/voice
+            if ((mode === "audio" || mode === "voice") && googleTTS) {
+                try {
+                    const urls = googleTTS.getAllAudioUrls(answer.slice(0, 1000), {
+                        lang: "en",
+                        slow: false,
+                        host: "https://translate.google.com",
+                    });
+                    const buffers = [];
+                    for (const u of urls) {
+                        const r = await axios.get(u.url, { responseType: "arraybuffer", timeout: 20000 });
+                        buffers.push(Buffer.from(r.data));
+                    }
+                    if (buffers.length) {
+                        await Prince.sendMessage(from, {
+                            audio: Buffer.concat(buffers),
+                            mimetype: "audio/mpeg",
+                            ptt: true,
+                        }, { quoted: msg });
+                        return;
+                    }
+                } catch (e) {
+                    // fall through to text reply
+                }
+            }
+
+            await Prince.sendMessage(from, { text: answer }, { quoted: msg });
+        } catch (e) {
+            console.error("ChatBot error:", e);
+        }
     });
 }
 
