@@ -1197,3 +1197,307 @@ gmd({
     await reply(`❌ Error: ${e.message}`);
   }
 });
+
+
+// ─── STALK : social-media profile lookups ────────────────────────────────────
+const STALK_HOSTS = {
+  prince: { base: "https://api.princetechn.com", key: "prince_api_56yjJ568dte4" },
+  gifted: { base: "https://api.giftedtech.web.id", key: "gifted" },
+};
+
+// Try candidate API endpoints in order; return the first usable result object.
+async function stalkFetch(candidates) {
+  for (const c of candidates) {
+    try {
+      const h = STALK_HOSTS[c.host];
+      if (!h) continue;
+      const url = new URL(h.base + c.path);
+      if (h.key) url.searchParams.set("apikey", h.key);
+      for (const [k, v] of Object.entries(c.params || {})) {
+        if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
+      }
+      const res = await axios.get(url.toString(), {
+        timeout: 25000,
+        headers: { "User-Agent": "XHRIS-MD-V2", Accept: "application/json" },
+      });
+      const d = res.data;
+      if (!d || d.success === false || d.status === false || d.error) continue;
+      const r = d.result || d.data || d;
+      // Skip upstream scraper errors wrapped inside result
+      if (!r || typeof r !== "object" || r.status === "error" || r.error) continue;
+      if (Object.keys(r).length) return r;
+    } catch (e) { /* try next candidate */ }
+  }
+  return null;
+}
+
+// First defined/non-empty value among the given keys
+const sg = (o, ...keys) => {
+  for (const k of keys) {
+    const v = o?.[k];
+    if (v !== undefined && v !== null && v !== "") return v;
+  }
+  return null;
+};
+
+// Pretty-print a count
+const sNum = (v) =>
+  v === null || v === undefined || v === ""
+    ? "N/A"
+    : typeof v === "number"
+      ? v.toLocaleString("en-US")
+      : v;
+
+// Find a profile picture URL in an arbitrary result object
+function sPic(o) {
+  const keys = [
+    "profilePic", "profile_pic", "profile_pic_url", "profilePicUrl",
+    "profile_image_url", "profile_image", "avatar", "avatarUrl", "avatar_url",
+    "image", "picture", "photo", "hd_profile_pic", "thumbnail",
+  ];
+  for (const k of keys) {
+    const v = o?.[k];
+    if (typeof v === "string" && /^https?:\/\//.test(v)) return v;
+    if (v && typeof v === "object" && typeof v.url === "string") return v.url;
+  }
+  return null;
+}
+
+// Normalise a handle: accepts "@user", "user", or a profile URL
+function cleanHandle(q) {
+  let s = (q || "").trim();
+  s = s.replace(/^https?:\/\//i, "");
+  if (s.includes("/")) s = s.split("/").filter(Boolean).pop() || s;
+  return s.replace(/^@/, "").split("?")[0].trim();
+}
+
+async function sendStalkCard(Prince, from, conText, caption, pic) {
+  const { mek, sender, botName, newsletterJid } = conText;
+  if (pic) {
+    try {
+      await Prince.sendMessage(
+        from,
+        { image: { url: pic }, caption, contextInfo: getContextInfo(sender, newsletterJid, botName) },
+        { quoted: mek },
+      );
+      return;
+    } catch (e) { /* fall back to text-only */ }
+  }
+  await Prince.sendMessage(
+    from,
+    { text: caption, contextInfo: getContextInfo(sender, newsletterJid, botName) },
+    { quoted: mek },
+  );
+}
+
+
+// ─── STALK : Instagram ───────────────────────────────────────────────────────
+gmd({
+  pattern: "igstalk",
+  aliases: ["instastalk", "instagramstalk", "stalkig"],
+  react: "📸",
+  category: "stalk",
+  description: "Stalk an Instagram profile.",
+}, async (from, Prince, conText) => {
+  const { q, reply, react } = conText;
+  if (!q || !q.trim()) {
+    await react("❌");
+    return reply("❌ Provide an Instagram username.\n\n*Example:* .igstalk instagram");
+  }
+  await react("⏳");
+  const user = cleanHandle(q);
+  const r = await stalkFetch([
+    { host: "prince", path: "/api/stalk/igstalk", params: { username: user } },
+    { host: "gifted", path: "/api/stalk/igstalk", params: { username: user } },
+    { host: "gifted", path: "/api/stalk/instagram", params: { username: user } },
+  ]);
+  if (!r) {
+    await react("❌");
+    return reply(`❌ Couldn't fetch the Instagram profile for *${user}*. The service may be temporarily down or the user doesn't exist.`);
+  }
+  const uname = sg(r, "username", "user") || user;
+  const caption =
+    `📸 *INSTAGRAM STALK*\n\n` +
+    `👤 *Name:* ${sg(r, "fullname", "full_name", "name", "nickname") || "N/A"}\n` +
+    `🔖 *Username:* @${uname}\n` +
+    `📝 *Bio:* ${sg(r, "bio", "biography", "description") || "N/A"}\n` +
+    `👥 *Followers:* ${sNum(sg(r, "followers", "follower", "followersCount", "edge_followed_by"))}\n` +
+    `🔂 *Following:* ${sNum(sg(r, "following", "followingCount", "edge_follow"))}\n` +
+    `🖼️ *Posts:* ${sNum(sg(r, "posts", "total_posts", "postsCount", "media_count"))}\n` +
+    `✅ *Verified:* ${sg(r, "is_verified", "verified") ? "Yes" : "No"}\n` +
+    `🔒 *Private:* ${sg(r, "is_private", "private") ? "Yes" : "No"}\n` +
+    `🔗 https://instagram.com/${uname}`;
+  await sendStalkCard(Prince, from, conText, caption, sPic(r));
+  await react("✅");
+});
+
+
+// ─── STALK : TikTok ──────────────────────────────────────────────────────────
+gmd({
+  pattern: "tiktokstalk",
+  aliases: ["ttstalk", "stalktiktok"],
+  react: "🎵",
+  category: "stalk",
+  description: "Stalk a TikTok profile.",
+}, async (from, Prince, conText) => {
+  const { q, reply, react } = conText;
+  if (!q || !q.trim()) {
+    await react("❌");
+    return reply("❌ Provide a TikTok username.\n\n*Example:* .tiktokstalk tiktok");
+  }
+  await react("⏳");
+  const user = cleanHandle(q);
+  const r = await stalkFetch([
+    { host: "prince", path: "/api/stalk/tiktokstalk", params: { username: user } },
+    { host: "gifted", path: "/api/stalk/tiktokstalk", params: { username: user } },
+  ]);
+  if (!r) {
+    await react("❌");
+    return reply(`❌ Couldn't fetch the TikTok profile for *${user}*.`);
+  }
+  const uname = sg(r, "username", "user") || user;
+  const website = sg(r, "website");
+  const websiteStr = website && typeof website === "object" ? sg(website, "link", "url") : website;
+  const caption =
+    `🎵 *TIKTOK STALK*\n\n` +
+    `👤 *Name:* ${sg(r, "name", "nickname", "fullname") || "N/A"}\n` +
+    `🔖 *Username:* @${uname}\n` +
+    `📝 *Bio:* ${sg(r, "bio", "signature", "description") || "N/A"}\n` +
+    `👥 *Followers:* ${sNum(sg(r, "followers", "follower"))}\n` +
+    `🔂 *Following:* ${sNum(sg(r, "following"))}\n` +
+    `❤️ *Likes:* ${sNum(sg(r, "likes", "hearts", "heart", "like"))}\n` +
+    `🎬 *Videos:* ${sNum(sg(r, "videos", "video", "videoCount"))}\n` +
+    (websiteStr ? `🌐 *Website:* ${websiteStr}\n` : "") +
+    `🔗 https://tiktok.com/@${uname}`;
+  await sendStalkCard(Prince, from, conText, caption, sPic(r));
+  await react("✅");
+});
+
+
+// ─── STALK : Twitter / X ─────────────────────────────────────────────────────
+gmd({
+  pattern: "twitterstalk",
+  aliases: ["xstalk", "stalktwitter", "stalkx"],
+  react: "🐦",
+  category: "stalk",
+  description: "Stalk a Twitter/X profile.",
+}, async (from, Prince, conText) => {
+  const { q, reply, react } = conText;
+  if (!q || !q.trim()) {
+    await react("❌");
+    return reply("❌ Provide a Twitter/X username.\n\n*Example:* .twitterstalk elonmusk");
+  }
+  await react("⏳");
+  const user = cleanHandle(q);
+  let r = null;
+  try {
+    const { data } = await axios.get(`https://api.vxtwitter.com/${encodeURIComponent(user)}`, {
+      timeout: 20000,
+      headers: { "User-Agent": "XHRIS-MD-V2" },
+    });
+    if (data && !data.error && (data.screen_name || data.name)) r = data;
+  } catch (e) { /* handled below */ }
+  if (!r) {
+    await react("❌");
+    return reply(`❌ Couldn't fetch the Twitter/X profile for *${user}*. Check the username and try again.`);
+  }
+  const uname = r.screen_name || user;
+  const pic = (r.profile_image_url || "").replace("_normal", "_400x400") || null;
+  const caption =
+    `🐦 *TWITTER / X STALK*\n\n` +
+    `👤 *Name:* ${r.name || "N/A"}\n` +
+    `🔖 *Username:* @${uname}\n` +
+    `📝 *Bio:* ${r.description || "N/A"}\n` +
+    `👥 *Followers:* ${sNum(r.followers_count)}\n` +
+    `🔂 *Following:* ${sNum(r.following_count)}\n` +
+    `🐤 *Tweets:* ${sNum(r.tweet_count)}\n` +
+    `📍 *Location:* ${r.location || "N/A"}\n` +
+    `🔒 *Protected:* ${r.protected ? "Yes" : "No"}\n` +
+    `🔗 https://x.com/${uname}`;
+  await sendStalkCard(Prince, from, conText, caption, pic);
+  await react("✅");
+});
+
+
+// ─── STALK : Facebook ────────────────────────────────────────────────────────
+gmd({
+  pattern: "fbstalk",
+  aliases: ["facebookstalk", "stalkfb"],
+  react: "📘",
+  category: "stalk",
+  description: "Stalk a Facebook profile (public profiles only).",
+}, async (from, Prince, conText) => {
+  const { q, reply, react } = conText;
+  if (!q || !q.trim()) {
+    await react("❌");
+    return reply("❌ Provide a Facebook profile URL or username.\n\n*Example:* .fbstalk https://facebook.com/zuck");
+  }
+  await react("⏳");
+  const user = cleanHandle(q);
+  const isUrl = /facebook\.com|fb\.com/i.test(q);
+  const p = isUrl ? { url: q.trim() } : { username: user };
+  const r = await stalkFetch([
+    { host: "prince", path: "/api/stalk/facebook", params: p },
+    { host: "prince", path: "/api/stalk/fbstalk", params: p },
+    { host: "gifted", path: "/api/stalk/fbstalk", params: p },
+    { host: "gifted", path: "/api/stalk/facebook", params: p },
+  ]);
+  if (!r) {
+    await react("❌");
+    return reply("❌ Facebook lookup is currently unavailable (Facebook heavily restricts profile scraping). Try a public profile URL, e.g. .fbstalk https://facebook.com/zuck");
+  }
+  const uname = sg(r, "username", "user", "id") || user;
+  const caption =
+    `📘 *FACEBOOK STALK*\n\n` +
+    `👤 *Name:* ${sg(r, "name", "fullname", "full_name") || "N/A"}\n` +
+    `🔖 *Username/ID:* ${uname}\n` +
+    `📝 *Bio:* ${sg(r, "bio", "about", "description") || "N/A"}\n` +
+    `👥 *Followers:* ${sNum(sg(r, "followers", "follower"))}\n` +
+    `👫 *Friends:* ${sNum(sg(r, "friends", "friendsCount"))}\n` +
+    (sg(r, "work") ? `💼 *Work:* ${sg(r, "work")}\n` : "") +
+    (sg(r, "location", "city") ? `📍 *Location:* ${sg(r, "location", "city")}\n` : "") +
+    (sg(r, "url", "link", "profile") ? `🔗 ${sg(r, "url", "link", "profile")}` : "");
+  await sendStalkCard(Prince, from, conText, caption, sPic(r));
+  await react("✅");
+});
+
+
+// ─── STALK : LinkedIn ────────────────────────────────────────────────────────
+gmd({
+  pattern: "linkedinstalk",
+  aliases: ["linkedin", "stalklinkedin"],
+  react: "💼",
+  category: "stalk",
+  description: "Stalk a LinkedIn profile (public profiles only).",
+}, async (from, Prince, conText) => {
+  const { q, reply, react } = conText;
+  if (!q || !q.trim()) {
+    await react("❌");
+    return reply("❌ Provide a LinkedIn profile URL or username.\n\n*Example:* .linkedinstalk https://linkedin.com/in/williamhgates");
+  }
+  await react("⏳");
+  const user = cleanHandle(q);
+  const isUrl = /linkedin\.com/i.test(q);
+  const p = isUrl ? { url: q.trim() } : { username: user };
+  const r = await stalkFetch([
+    { host: "prince", path: "/api/stalk/linkedin", params: p },
+    { host: "prince", path: "/api/stalk/linkedinstalk", params: p },
+    { host: "gifted", path: "/api/stalk/linkedin", params: p },
+    { host: "gifted", path: "/api/stalk/linkedinstalk", params: p },
+  ]);
+  if (!r) {
+    await react("❌");
+    return reply("❌ LinkedIn lookup is currently unavailable (LinkedIn blocks profile scraping). Try a full profile URL, e.g. .linkedinstalk https://linkedin.com/in/williamhgates");
+  }
+  const caption =
+    `💼 *LINKEDIN STALK*\n\n` +
+    `👤 *Name:* ${sg(r, "name", "fullname", "full_name") || "N/A"}\n` +
+    `🏷️ *Headline:* ${sg(r, "headline", "title", "occupation") || "N/A"}\n` +
+    `📝 *About:* ${sg(r, "about", "summary", "bio", "description") || "N/A"}\n` +
+    `🏢 *Company:* ${sg(r, "company", "companyName") || "N/A"}\n` +
+    `📍 *Location:* ${sg(r, "location", "geo", "country") || "N/A"}\n` +
+    `👥 *Connections:* ${sNum(sg(r, "connections", "followers"))}\n` +
+    (sg(r, "url", "link", "profile") ? `🔗 ${sg(r, "url", "link", "profile")}` : "");
+  await sendStalkCard(Prince, from, conText, caption, sPic(r));
+  await react("✅");
+});

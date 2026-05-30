@@ -517,14 +517,27 @@ gmd({
 // Resolves { lid, pnJid } for block. Uses groupMetadata for the lid<->pn mapping.
 // Returns { lid, pnJid } or { error: "..." } or null.
 async function resolveBlockTarget(conText, from, Prince) {
-  const { mentionedJid, quotedUser, q, groupMetadata, sender } = conText;
-  let raw = (mentionedJid && mentionedJid[0]) || quotedUser || null;
+  const { mentionedJid, quotedUser, q, groupMetadata } = conText;
+  const inGroup = from.endsWith("@g.us");
+
+  // Priority: explicit mention > number in text > replied user
+  let raw = (mentionedJid && mentionedJid[0]) || null;
+  const fromMention = !!raw;
   if (!raw && q) {
     const num = q.replace(/[^0-9]/g, "");
     if (num.length >= 8) raw = num + "@s.whatsapp.net";
   }
-  // In a private chat with no explicit target, act on the sender of the current chat
-  if (!raw && !from.endsWith("@g.us")) raw = sender || from;
+  if (!raw) raw = quotedUser || null;
+
+  // DM fix: in a 1-on-1 chat the only blockable party is the chat partner.
+  // WhatsApp omits the quoted participant on DM replies (raw stays empty), and
+  // `sender` would be the owner for this fromMe command — so target `from`
+  // (the partner) for both a plain `.block` and a `.block` reply in a DM.
+  if (!fromMention && !inGroup && from.endsWith("@s.whatsapp.net") &&
+      (!raw || String(raw).endsWith("@lid"))) {
+    raw = from;
+  }
+
   if (!raw) return null;
   if (raw.endsWith("@g.us")) return null;
 
