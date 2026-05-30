@@ -2008,18 +2008,25 @@ gmd(
 
     if (!isSuperUser) return reply("❌ Owner Only Command!");
 
-    // Collect the link text from the argument or from the replied message
+    // Collect ALL available text: argument + replied message (every field)
     let text = (q || "").trim();
-    if (!text && quotedMsg) {
-      text =
-        quotedMsg.conversation ||
-        quotedMsg.extendedTextMessage?.text ||
-        quotedMsg.imageMessage?.caption ||
-        quotedMsg.videoMessage?.caption ||
-        "";
+    if (quotedMsg) {
+      const quotedText = [
+        quotedMsg.conversation,
+        quotedMsg.extendedTextMessage?.text,
+        quotedMsg.imageMessage?.caption,
+        quotedMsg.videoMessage?.caption,
+        quotedMsg.documentMessage?.caption,
+        quotedMsg.documentWithCaptionMessage?.message?.documentMessage?.caption,
+        // some links arrive inside a forwarded message's context
+        quotedMsg.extendedTextMessage?.contextInfo?.quotedMessage?.conversation,
+        quotedMsg.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text,
+      ].filter(Boolean).join(" ");
+      text = (text + " " + quotedText).trim();
     }
 
-    const match = text.match(/chat\.whatsapp\.com\/([0-9A-Za-z]+)/);
+    // Find the link anywhere in the combined text (case-insensitive)
+    const match = text.match(/chat\.whatsapp\.com\/([0-9A-Za-z]+)/i);
     if (!match) {
       await react("❌");
       return reply(

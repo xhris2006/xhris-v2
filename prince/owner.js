@@ -804,6 +804,114 @@ gmd({
   }
 });
 
+// ─── SETCATALOG : copy a business catalog onto the bot's own profile ─────────
+gmd({
+  pattern: "setcatalog",
+  aliases: ["copycatalog", "clonecatalog"],
+  react: "📋",
+  category: "owner",
+  description: "Copy a business account's catalog onto your profile (bot must be Business).",
+}, async (from, Prince, conText) => {
+  const { q, reply, react, isSuperUser, quotedUser, mentionedJid } = conText;
+
+  if (!isSuperUser) {
+    await react("❌");
+    return reply("❌ Owner Only Command!");
+  }
+
+  // Target
+  let targetJid = null;
+  if (mentionedJid && mentionedJid[0]) targetJid = mentionedJid[0];
+  else if (quotedUser) targetJid = quotedUser;
+  else if (q) {
+    const num = q.replace(/[^0-9]/g, "");
+    if (num.length >= 8) targetJid = num + "@s.whatsapp.net";
+  }
+
+  if (!targetJid) {
+    await react("❌");
+    return reply("📋 *Copy a catalog*\n\nUsage: `.setcatalog 237xxxxxxxx`\nOr reply to / mention the person.");
+  }
+
+  const num = targetJid.split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+  if (num.length < 8) {
+    await react("❌");
+    return reply("❌ Invalid number.");
+  }
+  targetJid = num + "@s.whatsapp.net";
+
+  if (typeof Prince.getCatalog !== "function" || typeof Prince.productCreate !== "function") {
+    await react("❌");
+    return reply("❌ Catalog features are not available on this build.");
+  }
+
+  await react("⏳");
+
+  // 1) Fetch the source catalog
+  let products = [];
+  try {
+    const result = await Prince.getCatalog({ jid: targetJid, limit: 50 });
+    products = result?.products || [];
+  } catch (e) {
+    await react("❌");
+    const m = (e.message || "").toLowerCase();
+    if (m.includes("not-authorized") || m.includes("forbidden") || m.includes("not-acceptable")) {
+      return reply(`❌ *Catalog unavailable*\n\nThe number +${num} is not a *WhatsApp Business* account, or its catalog is private.`);
+    }
+    return reply(`❌ Could not fetch the catalog: ${e.message}`);
+  }
+
+  if (!products.length) {
+    await react("❌");
+    return reply(`❌ *No products*\n\nThe number +${num} has no catalog, or it is not a WhatsApp Business account.`);
+  }
+
+  await reply(`📥 Found ${products.length} product(s) on +${num}.\n_Copying onto your profile..._`);
+
+  // 2) Recreate each product on the bot's profile
+  let created = 0, failed = 0;
+  const errors = [];
+
+  for (const p of products) {
+    try {
+      const imgUrl = p.imageUrls && (p.imageUrls.original || p.imageUrls.requested || Object.values(p.imageUrls)[0]);
+      const images = imgUrl ? [{ url: imgUrl }] : [];
+
+      await Prince.productCreate({
+        name: p.name || "Product",
+        description: p.description || "",
+        price: p.price || 0,
+        currency: p.currency || "XAF",
+        isHidden: false,
+        originCountryCode: undefined,
+        images,
+      });
+      created++;
+      await new Promise((r) => setTimeout(r, 1500)); // avoid rate-limit
+    } catch (e) {
+      failed++;
+      const m = (e.message || "").toLowerCase();
+      if (m.includes("not-authorized") || m.includes("forbidden")) {
+        await react("❌");
+        return reply(
+          `❌ *Your account (the bot) is not WhatsApp Business*\n\n` +
+          `To copy a catalog, the bot's number must be a *WhatsApp Business* account with catalog enabled.\n\n` +
+          `Convert the bot account to Business in WhatsApp settings, then try again.`
+        );
+      }
+      if (errors.length < 3) errors.push(`• ${p.name}: ${e.message}`);
+    }
+  }
+
+  await react(created > 0 ? "✅" : "❌");
+  let summary = `📋 *Catalog copy finished*\n\n` +
+    `✅ Created: ${created}/${products.length}\n` +
+    (failed ? `❌ Failed: ${failed}\n` : "");
+  if (errors.length) summary += `\n_Error details:_\n${errors.join("\n")}`;
+  if (created > 0) summary += `\n\n_Check your catalog in WhatsApp Business._`;
+  return reply(summary);
+});
+
 gmd({
   pattern: "mention",
   aliases: ["setmention", "mentionreply"],
@@ -1924,32 +2032,40 @@ gmd({
 
 // Sends a user's profile card (pic, about, last updated)
 async function sendUserProfile(Prince, from, conText, targetUser) {
-  const { mek, reply, react, timeZone, isGroup, botFooter } = conText;
+  const { mek, reply, react, timeZone, botFooter } = conText;
   let profilePictureUrl;
   let statusText = "Not Found";
   let setAt = "Not Available";
 
-  if (isGroup && targetUser.endsWith('@lid')) {
+  // Resolve the @lid to a real number (NOT only in groups)
+  if (targetUser && targetUser.endsWith('@lid')) {
     try {
       const jid = await Prince.getJidFromLid(targetUser);
-      if (jid) targetUser = jid;
+      if (jid && jid.endsWith('@s.whatsapp.net')) targetUser = jid;
     } catch (e) {}
   }
 
+  // Helper: race a promise against a timeout to avoid hangs
+  const withTimeout = (promise, ms) =>
+    Promise.race([
+      promise,
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms)),
+    ]);
+
   try {
-    profilePictureUrl = await Prince.profilePictureUrl(targetUser, "image");
+    profilePictureUrl = await withTimeout(Prince.profilePictureUrl(targetUser, "image"), 8000);
   } catch (e) {
     profilePictureUrl = "https://telegra.ph/file/9521e9ee2fdbd0d6f4f1c.jpg";
   }
 
   try {
-    const statusData = await Prince.fetchStatus(targetUser);
-    if (statusData && statusData.length > 0 && statusData[0].status) {
+    const statusData = await withTimeout(Prince.fetchStatus(targetUser), 8000);
+    if (Array.isArray(statusData) && statusData.length > 0 && statusData[0].status) {
       statusText = statusData[0].status.status || "Not Found";
       setAt = statusData[0].status.setAt || "Not Available";
     } else if (statusData?.status) {
-      statusText = statusData.status || "Not Found";
-      setAt = statusData.setAt || "Not Available";
+      statusText = statusData.status?.status || statusData.status || "Not Found";
+      setAt = statusData.status?.setAt || statusData.setAt || "Not Available";
     }
   } catch (e) {}
 
