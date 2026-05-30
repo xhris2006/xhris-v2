@@ -557,6 +557,98 @@ ${options.join("\n")}
 
 gmd(
   {
+    pattern: "xmedia",
+    category: "downloader",
+    react: "🐦",
+    aliases: ["twmedia", "xmediadl", "twittermedia", "twdl"],
+    description: "Download Twitter/X media (video or photo) directly from a URL, no menu",
+  },
+  async (from, Prince, conText) => {
+    const { q, mek, reply, react, botFooter, PrinceTechApi, PrinceApiKey } = conText;
+
+    if (!q) {
+      await react("❌");
+      return reply("Please provide a Twitter/X URL\n\n*Example:* .xmedia https://x.com/user/status/123456789");
+    }
+
+    if (!q.includes("twitter.com") && !q.includes("x.com")) {
+      await react("❌");
+      return reply("Please provide a valid Twitter/X URL");
+    }
+
+    try {
+      await react("⬇️");
+
+      const apiUrl = `${PrinceTechApi}/api/download/twitter?apikey=${PrinceApiKey}&url=${encodeURIComponent(q)}`;
+      const response = await axios.get(apiUrl, { timeout: 60000 });
+
+      if (!response.data?.success || !response.data?.result) {
+        await react("❌");
+        return reply("Failed to fetch media. Please check the URL and try again.");
+      }
+
+      const result = response.data.result;
+      const videoUrls = Array.isArray(result.videoUrls) ? result.videoUrls : [];
+      const images = result.images || result.photos || (result.image ? [result.image] : []);
+
+      let sent = false;
+
+      // Send the best-quality video (first entry is highest quality)
+      if (videoUrls.length > 0) {
+        const best = videoUrls[0];
+        const videoUrl = best?.url || best;
+
+        if (videoUrl) {
+          const fileSize = await getFileSize(videoUrl);
+          const sendAsDoc = fileSize > MAX_MEDIA_SIZE;
+
+          if (sendAsDoc) {
+            await Prince.sendMessage(from, {
+              document: { url: videoUrl },
+              fileName: `twitter_video_${best?.quality || "hd"}.mp4`,
+              mimetype: "video/mp4",
+              caption: `> *${botFooter}*`,
+            }, { quoted: mek });
+          } else {
+            await Prince.sendMessage(from, {
+              video: { url: videoUrl },
+              mimetype: "video/mp4",
+              caption: `> *${botFooter}*`,
+            }, { quoted: mek });
+          }
+          sent = true;
+        }
+      }
+
+      // Send any photos found in the tweet
+      if (Array.isArray(images) && images.length > 0) {
+        for (const img of images) {
+          const imgUrl = typeof img === "string" ? img : (img?.url || img?.image);
+          if (!imgUrl) continue;
+          await Prince.sendMessage(from, {
+            image: { url: imgUrl },
+            caption: `> *${botFooter}*`,
+          }, { quoted: mek });
+          sent = true;
+        }
+      }
+
+      if (!sent) {
+        await react("❌");
+        return reply("No downloadable media found in this tweet.");
+      }
+
+      await react("✅");
+    } catch (error) {
+      console.error("X media download error:", error);
+      await react("❌");
+      return reply("An error occurred. Please try again.");
+    }
+  }
+);
+
+gmd(
+  {
     pattern: "ig",
     category: "downloader",
     react: "📸",
