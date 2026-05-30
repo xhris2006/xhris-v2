@@ -7,6 +7,7 @@ const { getSetting, addWarning, resetWarnings } = require("./gmdSudoUtil");
 const logger = require("prince-baileys/lib/Utils/logger").default.child({});
 const { isJidGroup, downloadMediaMessage, getContentType } = require("prince-baileys");
 const axios = require("axios");
+const { callApiWithFallback } = require("./apiFallback");
 
 const {
     CHATBOT: chatBot,
@@ -75,6 +76,62 @@ const PrinceAntiLink = async (Prince, message, antiLink) => {
     } catch (err) { console.error('Anti-link error:', err); }
 };
 
+// Detects other WhatsApp bots by their Baileys message-ID signature (BAE5...)
+// and removes / silences them. `mode`: 'true'/'kick' = delete + remove, 'delete' = delete only.
+const PrinceAntiBot = async (Prince, message, mode) => {
+    try {
+        if (!message?.message || message.key.fromMe) return;
+        if (!mode || mode === 'false') return;
+        const from = message.key.remoteJid;
+        if (!from || !from.endsWith('@g.us')) return;
+
+        const msgId = message.key.id || '';
+        // Baileys-generated IDs start with "BAE5"; real phone/web clients do not.
+        if (!/^BAE5[0-9A-F]{6,}$/i.test(msgId)) return;
+
+        const sender = message.key.participant || message.key.remoteJid;
+        const norm = (j) => (j || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+        const botNum = norm(Prince.user?.id);
+        const botLidNum = norm(Prince.user?.lid);
+        const senderNum = norm(sender);
+        if (senderNum && (senderNum === botNum || senderNum === botLidNum)) return;
+
+        const meta = await Prince.groupMetadata(from);
+        const isPart = (p, num) => {
+            const idN = norm(p.id);
+            const lidN = norm(p.lid);
+            const pnN = norm(p.pn);
+            return idN === num || lidN === num || pnN === num;
+        };
+        const botIsAdmin = meta.participants.some(
+            (p) => (isPart(p, botNum) || isPart(p, botLidNum)) &&
+                   (p.admin === 'admin' || p.admin === 'superadmin'),
+        );
+        if (!botIsAdmin) return;
+
+        const senderIsAdmin = meta.participants.some(
+            (p) => isPart(p, senderNum) &&
+                   (p.admin === 'admin' || p.admin === 'superadmin'),
+        );
+        if (senderIsAdmin) return; // never touch admins
+
+        try { await Prince.sendMessage(from, { delete: message.key }); } catch (e) {}
+
+        if (mode === 'delete') {
+            await Prince.sendMessage(from, {
+                text: `🤖 Anti-Bot: bot message from @${senderNum} deleted.`,
+                mentions: [sender],
+            });
+        } else {
+            try { await Prince.groupParticipantsUpdate(from, [sender], 'remove'); } catch (e) {}
+            await Prince.sendMessage(from, {
+                text: `🤖 Anti-Bot active!\n@${senderNum} was detected as a bot and removed.`,
+                mentions: [sender],
+            });
+        }
+    } catch (err) { console.error('Anti-bot error:', err); }
+};
+
 const PrinceStatusMention = async (Prince, message, mode) => {
     try {
         if (!message?.message || message.key.fromMe) return;
@@ -113,6 +170,134 @@ const PrinceAutoBio = async (Prince) => {
         await Prince.updateProfileStatus(bioText);
     } catch (e) {}
 };
+
+// ── Chatbot state & helpers ──────────────────────────────────────────────────
+const chatbotMuted = new Set(); // chat JIDs that asked the bot to stop
+
+// Words that tell the bot to stop replying (multi-language)
+const STOP_WORDS = [
+    "stop", "stfu", "shut up", "shutup", "stop talking", "leave me alone", "go away", "enough",
+    "arrete", "arrête", "arreter", "arrêter", "arrete toi", "arrête de repondre", "arrête de répondre",
+    "arrete de repondre", "tais toi", "tais-toi", "taistoi", "ta gueule", "tagueule", "la ferme",
+    "ferme la", "ferme-la", "silence", "chut", "laisse moi", "laisse-moi", "ca suffit", "ça suffit",
+    "basta", "callate", "cállate", "cala boca", "halt die klappe", "ruhe", "uskut", "kelele",
+];
+// Words that re-enable the bot after a stop
+const RESUME_WORDS = [
+    "start", "resume", "come back", "wake up", "talk to me",
+    "reviens", "reprends", "reprend", "continue", "parle", "repond", "réponds", "reponds",
+    "chatbot", "reactive", "réactive", "activetoi",
+];
+const buildWordRegex = (words) =>
+    new RegExp(
+        "(^|[^\\p{L}])(" +
+            words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") +
+            ")([^\\p{L}]|$)",
+        "iu",
+    );
+const STOP_RE = buildWordRegex(STOP_WORDS);
+const RESUME_RE = buildWordRegex(RESUME_WORDS);
+
+// Detect a downloadable media link and its platform
+function chatbotMediaUrl(text) {
+    const m = text.match(/https?:\/\/[^\s]+/i);
+    if (!m) return null;
+    const url = m[0];
+    const u = url.toLowerCase();
+    if (u.includes("tiktok.com")) return { platform: "tiktok", url };
+    if (u.includes("instagram.com")) return { platform: "instagram", url };
+    if (u.includes("facebook.com") || u.includes("fb.watch")) return { platform: "facebook", url };
+    if (u.includes("twitter.com") || u.includes("x.com")) return { platform: "twitter", url };
+    if (u.includes("youtube.com") || u.includes("youtu.be")) return { platform: "youtube", url };
+    return null;
+}
+
+// Resolve a media link to a direct video URL via the site APIs
+async function chatbotResolveMedia(platform, url) {
+    const pick = (r, ...keys) => {
+        for (const k of keys) {
+            const v = r?.[k];
+            if (typeof v === "string" && v) return v;
+        }
+        return null;
+    };
+    try {
+        if (platform === "tiktok") {
+            const r = await callApiWithFallback("download/tiktok", { url });
+            const res = r.success ? (r.data?.result || r.data) : null;
+            return res && pick(res, "video", "video_url", "play", "hdplay", "nowm", "url");
+        }
+        if (platform === "instagram") {
+            const r = await callApiWithFallback("download/instadl", { url });
+            const res = r.success ? (r.data?.result || r.data) : null;
+            let v = res && pick(res, "download_url", "url", "video");
+            if (!v && Array.isArray(res?.media) && res.media[0]) v = res.media[0].url || res.media[0];
+            return v;
+        }
+        if (platform === "facebook") {
+            const r = await callApiWithFallback("download/facebook", { url });
+            const res = r.success ? (r.data?.result || r.data) : null;
+            return res && pick(res, "hd_video", "sd_video", "hd", "sd", "url");
+        }
+        if (platform === "twitter") {
+            const r = await callApiWithFallback("download/twitter", { url });
+            const res = r.success ? (r.data?.result || r.data) : null;
+            if (Array.isArray(res?.videoUrls) && res.videoUrls[0]) return res.videoUrls[0].url || res.videoUrls[0];
+            return res && pick(res, "url", "video");
+        }
+        if (platform === "youtube") {
+            const r = await callApiWithFallback("download/ytmp4", { url });
+            const res = r.success ? (r.data?.result || r.data) : null;
+            return res && pick(res, "download_url", "downloadUrl", "url", "video");
+        }
+    } catch (e) {}
+    return null;
+}
+
+// Web search via DuckDuckGo Instant Answer → text with real links
+async function chatbotWebSearch(query) {
+    try {
+        const res = await axios.get("https://api.duckduckgo.com/", {
+            params: { q: query, format: "json", no_html: 1, t: "xhris" },
+            timeout: 15000,
+        });
+        const d = res.data || {};
+        const lines = [];
+        if (d.Heading) lines.push(`*${d.Heading}*`);
+        if (d.AbstractText) lines.push(d.AbstractText);
+        if (d.AbstractURL) lines.push(`🔗 ${d.AbstractURL}`);
+        const links = [];
+        const collect = (arr) => {
+            for (const t of arr || []) {
+                if (links.length >= 5) break;
+                if (t.FirstURL && t.Text) links.push(`• ${t.Text}\n  ${t.FirstURL}`);
+                else if (Array.isArray(t.Topics)) collect(t.Topics);
+            }
+        };
+        collect(d.RelatedTopics);
+        if (links.length) {
+            lines.push("", "*🔎 Links:*");
+            lines.push(...links.slice(0, 5));
+        }
+        return lines.length ? lines.join("\n") : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// Detect an explicit web-search request and extract the query
+function chatbotSearchQuery(body) {
+    const m = body.match(/^\s*(cherche|recherche|recherches|search|google|look ?up|browse)\b[:,]?\s+(.+)/i);
+    return m ? m[2].trim() : null;
+}
+
+// Rough language guess (used only to pick the TTS voice)
+function detectTtsLang(text) {
+    const t = " " + text.toLowerCase() + " ";
+    if ([" le ", " la ", " les ", " je ", " tu ", " est ", " et ", " bonjour ", " merci", " salut", " pourquoi", " comment", " ça ", " oui ", " non ", " quoi "].some((w) => t.includes(w))) return "fr";
+    if ([" hola ", " gracias", " porque", " qué ", " cómo ", " el ", " los ", " que ", " para "].some((w) => t.includes(w))) return "es";
+    return "en";
+}
 
 function PrinceChatBot(Prince, chatBot, chatBotMode, createContext, createContext2, googleTTS) {
     Prince.ev.on("messages.upsert", async ({ messages, type }) => {
@@ -160,13 +345,59 @@ function PrinceChatBot(Prince, chatBot, chatBotMode, createContext, createContex
                 if (!body) return;
             }
 
+            // ── Stop / resume control ──
+            if (chatbotMuted.has(from)) {
+                if (RESUME_RE.test(body)) {
+                    chatbotMuted.delete(from);
+                    await Prince.sendMessage(from, { text: "👋 I'm back! / Je suis de retour !" }, { quoted: msg });
+                }
+                return; // stay silent while muted
+            }
+            if (body.length <= 60 && STOP_RE.test(body)) {
+                chatbotMuted.add(from);
+                await Prince.sendMessage(from, { text: "🤐 Okay, I'll stop replying. Say *start* / *reviens* when you want me back." }, { quoted: msg });
+                return;
+            }
+
             try { await Prince.sendPresenceUpdate("composing", from); } catch (e) {}
 
-            // Query the AI
+            // ── 1) Download media from a link ──
+            const media = chatbotMediaUrl(body);
+            if (media) {
+                const videoUrl = await chatbotResolveMedia(media.platform, media.url);
+                if (videoUrl) {
+                    try {
+                        await Prince.sendMessage(from, {
+                            video: { url: videoUrl },
+                            mimetype: "video/mp4",
+                            caption: `✅ Downloaded from ${media.platform}.`,
+                        }, { quoted: msg });
+                    } catch (e) {
+                        await Prince.sendMessage(from, { text: `❌ Found the ${media.platform} media but couldn't send it (too large or unavailable).` }, { quoted: msg });
+                    }
+                } else {
+                    await Prince.sendMessage(from, { text: `❌ I couldn't download that ${media.platform} link. It may be private or unavailable.` }, { quoted: msg });
+                }
+                return;
+            }
+
+            // ── 2) Explicit web search ──
+            const sq = chatbotSearchQuery(body);
+            if (sq) {
+                const results = await chatbotWebSearch(sq);
+                await Prince.sendMessage(from, { text: results || `🔎 No results found for *${sq}*.` }, { quoted: msg });
+                return;
+            }
+
+            // ── 3) AI chat (mirrors the user's language) ──
+            const prompt =
+                `You are ${botName}, a friendly WhatsApp assistant. ` +
+                `Always reply in the SAME language the user writes in (French, English, Spanish, or any other). ` +
+                `Keep answers natural, helpful and concise.\n\nUser: ${body}`;
             let answer = "";
             try {
                 const res = await axios.get(`${PrinceTechApi}/api/ai/gpt`, {
-                    params: { apikey: PrinceApiKey, q: body },
+                    params: { apikey: PrinceApiKey, q: prompt },
                     timeout: 30000,
                 });
                 const d = res.data;
@@ -179,8 +410,9 @@ function PrinceChatBot(Prince, chatBot, chatBotMode, createContext, createContex
             // Voice reply when CHATBOT is set to audio/voice
             if ((mode === "audio" || mode === "voice") && googleTTS) {
                 try {
+                    const ttsLang = detectTtsLang(body);
                     const urls = googleTTS.getAllAudioUrls(answer.slice(0, 1000), {
-                        lang: "en",
+                        lang: ttsLang,
                         slow: false,
                         host: "https://translate.google.com",
                     });
@@ -275,6 +507,6 @@ const PrinceAntiDelete = async (Prince, deletedMsg, key, deleter, sender, botOwn
 };
 
 module.exports = {
-    logger, emojis, PrinceAutoReact, PrinceTechApi, PrinceApiKey, PrinceAntiLink,
+    logger, emojis, PrinceAutoReact, PrinceTechApi, PrinceApiKey, PrinceAntiLink, PrinceAntiBot,
     PrinceStatusMention, PrinceAutoBio, PrinceChatBot, PrincePresence, PrinceAntiDelete, PrinceAnticall,
 };

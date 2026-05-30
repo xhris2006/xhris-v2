@@ -26,6 +26,7 @@ const {
     PrinceApiKey,
     PrinceAutoReact,
     PrinceAntiLink,
+    PrinceAntiBot,
     PrinceAutoBio,
     PrinceChatBot,
     loadSession,
@@ -375,7 +376,16 @@ async function startPrince() {
                     if (groupAntiLink !== "false") {
                         await PrinceAntiLink(Prince, message, groupAntiLink);
                     }
-                    
+
+                    const groupAntiBot = getGroupSetting(
+                        chatJid,
+                        "ANTIBOT",
+                        "false",
+                    );
+                    if (groupAntiBot !== "false") {
+                        await PrinceAntiBot(Prince, message, groupAntiBot);
+                    }
+
                     const groupStatusMention = getGroupSetting(
                         chatJid,
                         "STATUS_MENTION",
@@ -1342,6 +1352,83 @@ async function startPrince() {
             try {
                 const { id, participants, action } = update;
                 if (!id || !participants || !participants.length) return;
+
+                // ── Anti-Promote / Anti-Demote enforcement ───────────────────
+                if (action === "promote" || action === "demote") {
+                    try {
+                        const antiPromote =
+                            getGroupSetting(id, "ANTIPROMOTE", "false") === "true";
+                        const antiDemote =
+                            getGroupSetting(id, "ANTIDEMOTE", "false") === "true";
+
+                        if (
+                            (action === "promote" && antiPromote) ||
+                            (action === "demote" && antiDemote)
+                        ) {
+                            const norm = (j) =>
+                                (j || "").split("@")[0].split(":")[0].replace(/\D/g, "");
+                            const author = update.author || update.participant || "";
+                            const authorNum = norm(author);
+                            const botNum = norm(Prince.user?.id);
+                            const botLidNum = norm(Prince.user?.lid);
+
+                            const authorized = new Set();
+                            if (botNum) authorized.add(botNum);
+                            if (botLidNum) authorized.add(botLidNum);
+                            if (ownerNumber)
+                                authorized.add(String(ownerNumber).replace(/\D/g, ""));
+                            for (const s of getSudoNumbers() || [])
+                                authorized.add(String(s).replace(/\D/g, ""));
+                            if (config.SUDO_NUMBERS)
+                                for (const s of config.SUDO_NUMBERS.split(","))
+                                    authorized.add(s.replace(/\D/g, ""));
+
+                            // Only revert when the actor is NOT the bot/owner/sudo
+                            if (!authorNum || !authorized.has(authorNum)) {
+                                const revert =
+                                    action === "promote" ? "demote" : "promote";
+                                // Never act on the bot/owner themselves
+                                const targets = participants.filter((p) => {
+                                    const n = norm(p);
+                                    return n && n !== botNum && n !== botLidNum;
+                                });
+                                if (targets.length) {
+                                    try {
+                                        await Prince.groupParticipantsUpdate(
+                                            id,
+                                            targets,
+                                            revert,
+                                        );
+                                        const tags = targets
+                                            .map((t) => `@${norm(t)}`)
+                                            .join(" ");
+                                        const label =
+                                            action === "promote"
+                                                ? "Anti-Promote"
+                                                : "Anti-Demote";
+                                        const verb =
+                                            action === "promote"
+                                                ? "promotion reverted (demoted)"
+                                                : "demotion reverted (re-promoted)";
+                                        const mentions = [...targets];
+                                        if (authorNum && author) mentions.push(author);
+                                        await Prince.sendMessage(id, {
+                                            text: `🛡️ *${label}*\n${tags} — ${verb}.${authorNum ? `\n_Unauthorized action by @${authorNum}._` : ""}`,
+                                            mentions,
+                                        });
+                                    } catch (e) {
+                                        console.error(
+                                            `${action} revert failed:`,
+                                            e,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.error("Anti-promote/demote error:", e);
+                    }
+                }
 
                 const welcomeEnabled = getGroupSetting(
                     id,

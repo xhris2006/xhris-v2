@@ -1986,6 +1986,72 @@ gmd(
 
 gmd(
   {
+    pattern: "antidemote",
+    react: "🛡️",
+    category: "group",
+    description: "Toggle anti-demote protection. Re-promotes any admin demoted by a non-owner.",
+  },
+  async (from, Prince, conText) => {
+    const { reply, react, isGroup, isBotAdmin, isAdmin, isSuperAdmin, args } = conText;
+
+    if (!isGroup) return reply("❌ This command only works in groups!");
+    if (!isBotAdmin) return reply("❌ Bot is not an admin in this group!");
+    if (!isAdmin && !isSuperAdmin) return reply("❌ You must be an admin to use this command!");
+
+    const action = args[0]?.toLowerCase();
+    const rawCurrent = await getGroupSetting(from, "ANTIDEMOTE");
+    const current = rawCurrent === "true" ? "true" : "false";
+
+    if (!action || !["on", "off"].includes(action)) {
+      return reply(`🛡️ *Anti-Demote Protection*\n\nCurrent: ${current === "true" ? "ON ✅" : "OFF ❌"}\n\n*Usage:*\n.antidemote on - Enable\n.antidemote off - Disable\n\n_When enabled, if a non-owner demotes an admin, that admin is automatically re-promoted._`);
+    }
+
+    const value = action === "on" ? "true" : "false";
+    if (current === value) {
+      return reply(`⚠️ Anti-Demote is already ${action === "on" ? "ON" : "OFF"}!`);
+    }
+
+    await setGroupSetting(from, "ANTIDEMOTE", value);
+    await react("✅");
+    return reply(`✅ Anti-Demote is now ${action === "on" ? "ON" : "OFF"} for this group.`);
+  },
+);
+
+gmd(
+  {
+    pattern: "antibot",
+    react: "🤖",
+    category: "group",
+    description: "Toggle anti-bot protection. Removes other WhatsApp bots detected in the group.",
+  },
+  async (from, Prince, conText) => {
+    const { reply, react, isGroup, isBotAdmin, isAdmin, isSuperAdmin, args } = conText;
+
+    if (!isGroup) return reply("❌ This command only works in groups!");
+    if (!isBotAdmin) return reply("❌ Bot is not an admin in this group!");
+    if (!isAdmin && !isSuperAdmin) return reply("❌ You must be an admin to use this command!");
+
+    const action = args[0]?.toLowerCase();
+    const rawCurrent = await getGroupSetting(from, "ANTIBOT");
+    const current = rawCurrent === "true" || rawCurrent === "kick" ? rawCurrent : "false";
+
+    if (!action || !["on", "off", "kick", "delete"].includes(action)) {
+      return reply(`🤖 *Anti-Bot Protection*\n\nCurrent: ${current !== "false" ? "ON ✅" : "OFF ❌"}\n\n*Usage:*\n.antibot on - Delete bot messages + remove the bot\n.antibot delete - Only delete bot messages\n.antibot off - Disable\n\n_Detects other WhatsApp bots by their message signature and removes them._`);
+    }
+
+    const value = action === "off" ? "false" : action === "delete" ? "delete" : "true";
+    if (current === value) {
+      return reply(`⚠️ Anti-Bot is already ${value === "false" ? "OFF" : value.toUpperCase()}!`);
+    }
+
+    await setGroupSetting(from, "ANTIBOT", value);
+    await react("✅");
+    return reply(`✅ Anti-Bot is now ${value === "false" ? "OFF" : value === "delete" ? "ON (delete only)" : "ON (remove)"} for this group.`);
+  },
+);
+
+gmd(
+  {
     pattern: "join",
     aliases: ["joingc", "joingroup"],
     react: "📥",
