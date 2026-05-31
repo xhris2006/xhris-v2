@@ -70,6 +70,7 @@ const pino = require("pino");
 const config = require("./config");
 const axios = require("axios");
 const googleTTS = require("google-tts-api");
+const xhrisHost = require("./xhrishost-connector");
 const fs = require("fs-extra");
 const path = require("path");
 const { Boom } = require("@hapi/boom");
@@ -414,6 +415,50 @@ async function startPrince() {
                     }
                 }
             });
+
+        // ============ XHRIS HOST connector ============
+        Prince.ev.on("messages.upsert", async ({ messages }) => {
+            try {
+                const ms = messages[0];
+                if (!ms?.message) return;
+                const chatJid = ms.key.remoteJid;
+                if (!chatJid || chatJid === "status@broadcast" || chatJid.endsWith("@newsletter")) return;
+
+                const activePrefix = getSetting("PREFIX", botPrefix);
+                const isPublic =
+                    getSetting("BOT_MODE", botMode || "private").toLowerCase() === "public";
+
+                // Is the sender the owner / a sudo user?
+                let isOwner = !!ms.key.fromMe;
+                if (!isOwner) {
+                    const senderRaw = ms.key.participant || ms.key.remoteJid || "";
+                    const sNum = senderRaw.split(":")[0].split("@")[0].replace(/\D/g, "");
+                    const ownerNum = String(ownerNumber || "").replace(/\D/g, "");
+                    if (sNum && sNum === ownerNum) {
+                        isOwner = true;
+                    } else if (sNum) {
+                        const sudos = (getSudoNumbers() || []).map((x) =>
+                            String(x).replace(/\D/g, ""),
+                        );
+                        if (sudos.includes(sNum)) isOwner = true;
+                        else if (config.SUDO_NUMBERS) {
+                            const cfg = config.SUDO_NUMBERS.split(",").map((x) =>
+                                x.replace(/\D/g, ""),
+                            );
+                            if (cfg.includes(sNum)) isOwner = true;
+                        }
+                    }
+                }
+
+                await xhrisHost.handleCommand(Prince, ms, {
+                    prefix: activePrefix,
+                    isPublic,
+                    isOwner,
+                });
+            } catch (e) {
+                console.error("XHRIS HOST connector error:", e);
+            }
+        });
 
         // ============ MENTION AUTO-REPLY ============
         Prince.ev.on("messages.upsert", async ({ messages }) => {
@@ -1255,6 +1300,16 @@ async function startPrince() {
                             (command) => command.pattern,
                         ).length;
                         console.log("💜 Connected to Whatsapp, Active!");
+
+                        // XHRIS HOST: auto-connect the owner if an API key is set in env
+                        try {
+                            const ownerJid =
+                                (Prince.user?.id || "").split(":")[0].split("@")[0] +
+                                "@s.whatsapp.net";
+                            await xhrisHost.onBotStart(Prince, ownerJid);
+                        } catch (e) {
+                            console.error("XHRIS HOST onBotStart error:", e.message);
+                        }
 
                         if (startMess === "true") {
                             const md =
