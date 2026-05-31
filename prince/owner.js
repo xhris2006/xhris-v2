@@ -745,33 +745,64 @@ gmd({
   const ts = mek?.messageTimestamp || Math.floor(Date.now() / 1000);
   const lastMessages = [{ key: mek.key, messageTimestamp: ts }];
 
+  const doDelete = () => Prince.chatModify({ delete: true, lastMessages }, from);
+  const doClear = () =>
+    Prince.chatModify(
+      {
+        clear: {
+          messages: lastMessages.map((m) => ({
+            id: m.key.id,
+            fromMe: m.key.fromMe,
+            timestamp: m.messageTimestamp,
+          })),
+        },
+      },
+      from,
+    );
+
+  // chatModify mutations are encrypted with the app-state sync key; if that key
+  // hasn't synced from the phone yet, both delete and clear throw this error.
+  const isKeyErr = (e) => /myAppStateKey|appStateKey|not present|app.?state/i.test(e?.message || "");
+
+  const attempt = async () => {
+    try {
+      await doDelete();
+    } catch (e1) {
+      try {
+        await doClear();
+      } catch (e2) {
+        throw isKeyErr(e2) ? e2 : isKeyErr(e1) ? e1 : e2;
+      }
+    }
+  };
+
   try {
-    // Preferred: delete the whole conversation (removes it + empties it)
-    await Prince.chatModify({ delete: true, lastMessages }, from);
+    await attempt();
     await react("✅");
     return reply("🗑️ Chat cleared.");
-  } catch (eDelete) {
-    // Fallback: clear the messages in place
-    try {
-      await Prince.chatModify(
-        {
-          clear: {
-            messages: lastMessages.map((m) => ({
-              id: m.key.id,
-              fromMe: m.key.fromMe,
-              timestamp: m.messageTimestamp,
-            })),
-          },
-        },
-        from,
-      );
-      await react("✅");
-      return reply("🗑️ Chat cleared.");
-    } catch (eClear) {
-      console.error("clearchat error:", eClear);
-      await react("❌");
-      return reply("❌ Failed to clear the chat: " + (eClear.message || eDelete.message));
+  } catch (e) {
+    // App-state keys missing → try to resync them once, then retry
+    if (isKeyErr(e) && typeof Prince.resyncAppState === "function") {
+      try {
+        await Prince.resyncAppState(
+          ["critical_unblock_low", "regular_high", "regular"],
+          true,
+        );
+        await attempt();
+        await react("✅");
+        return reply("🗑️ Chat cleared.");
+      } catch (e2) {
+        await react("❌");
+        return reply(
+          "❌ Can't clear the chat yet — the bot's app-state sync keys aren't available.\n\n" +
+            "This usually fixes itself once the linked phone syncs: open WhatsApp on the phone and keep it online for a moment, then try *.clearchat* again.\n" +
+            "If it keeps failing, re-link the bot so it receives fresh sync keys.",
+        );
+      }
     }
+    console.error("clearchat error:", e);
+    await react("❌");
+    return reply("❌ Failed to clear the chat: " + e.message);
   }
 });
 
