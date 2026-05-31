@@ -1,8 +1,6 @@
 const { gmd, getContextInfo } = require("../mayel");
 const axios = require("axios");
-const GIFTED_DLS = require("gifted-dls");
 const { callApiWithFallback } = require("../mayel/apiFallback");
-const giftedDls = new GIFTED_DLS();
 
 const MAX_MEDIA_SIZE = 60 * 1024 * 1024;
 
@@ -591,8 +589,38 @@ gmd(
               return reply("Invalid option. Please reply with: 1, 2 or 3", messageData);
           }
 
-          const downloadResult = await giftedDls.ytmp4(q, quality);
-          const downloadUrl = downloadResult.result.download_url;
+          // Download via public APIs in cascade (replaces the removed obfuscated package)
+          let downloadUrl = null;
+          const ytmp4Endpoints = [
+            `https://api.princetechn.com/api/download/ytmp4?apikey=prince_api_56yjJ568dte4&url=${encodeURIComponent(q)}&quality=${quality}`,
+            `https://api.giftedtech.web.id/api/download/ytmp4?apikey=gifted&url=${encodeURIComponent(q)}`,
+            `https://api.davidcyriltech.my.id/download/ytmp4?url=${encodeURIComponent(q)}`,
+            `https://api.dreaded.site/api/ytdl/video?url=${encodeURIComponent(q)}`,
+          ];
+
+          for (const endpoint of ytmp4Endpoints) {
+            try {
+              const res = await axios.get(endpoint, { timeout: 45000 });
+              const d = res.data;
+              downloadUrl =
+                d?.result?.download_url ||
+                d?.result?.url ||
+                d?.result?.video ||
+                d?.download_url ||
+                d?.url ||
+                d?.video ||
+                d?.result?.downloadUrl ||
+                d?.data?.url ||
+                d?.data?.download_url;
+              if (downloadUrl) break;
+            } catch (e) { continue; }
+          }
+
+          if (!downloadUrl) {
+            await react("❌");
+            return reply("La vidéo est indisponible sur toutes les sources. Réessaie dans quelques minutes.", messageData);
+          }
+
           const videoBuffer = await gmdBuffer(downloadUrl);
 
           if (videoBuffer instanceof Error) {

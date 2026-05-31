@@ -151,7 +151,10 @@ function normNum(j) {
 // ctx = { prefix, isPublic, isOwner } — provided by the bot so the connector
 // honours the bot's live prefix and public/private mode.
 async function handleCommand(sock, msg, ctx = {}) {
-  const prefix = ctx.prefix || '.';
+  // Resolve the prefix WITHOUT clobbering an empty (no-prefix) value.
+  // `ctx.prefix || '.'` was wrong: '' is falsy, so a null/empty prefix became '.'
+  let prefix = (ctx.prefix === undefined || ctx.prefix === null) ? '.' : String(ctx.prefix);
+  if (/^(null|none|aucun|false)$/i.test(prefix)) prefix = '';
   const isPublic = !!ctx.isPublic;
   const isOwner = (ctx.isOwner !== undefined) ? !!ctx.isOwner : isPrivileged(sock, msg);
 
