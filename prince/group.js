@@ -2052,6 +2052,39 @@ gmd(
 
 gmd(
   {
+    pattern: "antispam",
+    react: "🚯",
+    category: "group",
+    description: "Toggle anti-spam protection. Removes members who flood the chat.",
+  },
+  async (from, Prince, conText) => {
+    const { reply, react, isGroup, isBotAdmin, isAdmin, isSuperAdmin, args } = conText;
+
+    if (!isGroup) return reply("❌ This command only works in groups!");
+    if (!isBotAdmin) return reply("❌ Bot is not an admin in this group!");
+    if (!isAdmin && !isSuperAdmin) return reply("❌ You must be an admin to use this command!");
+
+    const action = args[0]?.toLowerCase();
+    const rawCurrent = await getGroupSetting(from, "ANTISPAM");
+    const current = rawCurrent === "true" || rawCurrent === "delete" ? rawCurrent : "false";
+
+    if (!action || !["on", "off", "kick", "delete", "warn"].includes(action)) {
+      return reply(`🚯 *Anti-Spam Protection*\n\nCurrent: ${current !== "false" ? "ON ✅" : "OFF ❌"}\n\n*Usage:*\n.antispam on - Remove flooders\n.antispam delete - Only delete + warn\n.antispam off - Disable\n\n_Triggers when a member sends 6+ messages within 7 seconds._`);
+    }
+
+    const value = action === "off" ? "false" : (action === "delete" || action === "warn") ? "delete" : "true";
+    if (current === value) {
+      return reply(`⚠️ Anti-Spam is already ${value === "false" ? "OFF" : value.toUpperCase()}!`);
+    }
+
+    await setGroupSetting(from, "ANTISPAM", value);
+    await react("✅");
+    return reply(`✅ Anti-Spam is now ${value === "false" ? "OFF" : value === "delete" ? "ON (delete + warn)" : "ON (remove)"} for this group.`);
+  },
+);
+
+gmd(
+  {
     pattern: "join",
     aliases: ["joingc", "joingroup"],
     react: "📥",

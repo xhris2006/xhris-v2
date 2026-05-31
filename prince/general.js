@@ -28,57 +28,79 @@ gmd({
         return `${days}d ${hours}h ${minutes}m ${seconds}s`;
     }
 
-    const now = new Date();
-    const date = new Intl.DateTimeFormat('en-GB', {
-        timeZone, day: '2-digit', month: '2-digit', year: 'numeric',
-    }).format(now);
-    const time = new Intl.DateTimeFormat('en-GB', {
-        timeZone, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
-    }).format(now);
+    // Mathematical Sans-Serif Bold Italic (𝘼𝘽𝘾 / 𝙖𝙗𝙘) + bold digits (𝟬-𝟵)
+    const fb = (str) => {
+        let out = "";
+        for (const ch of String(str)) {
+            const c = ch.codePointAt(0);
+            if (c >= 0x41 && c <= 0x5A) out += String.fromCodePoint(0x1D63C + (c - 0x41));      // A-Z
+            else if (c >= 0x61 && c <= 0x7A) out += String.fromCodePoint(0x1D656 + (c - 0x61)); // a-z
+            else if (c >= 0x30 && c <= 0x39) out += String.fromCodePoint(0x1D7EC + (c - 0x30)); // 0-9
+            else out += ch;
+        }
+        return out;
+    };
 
     const uptime = formatUptime(process.uptime());
     const totalCommands = commands.filter((c) => c.pattern).length;
+    const hostName = require('os').hostname();
+    const prefix = botPrefix || '';
 
     const categorized = commands.reduce((menu, gmd) => {
         if (gmd.pattern && !gmd.dontAddCommandList) {
-            if (!menu[gmd.category]) menu[gmd.category] = [];
-            menu[gmd.category].push(gmd.pattern);
+            const cat = gmd.category || 'misc';
+            if (!menu[cat]) menu[cat] = [];
+            menu[cat].push(gmd.pattern);
         }
         return menu;
     }, {});
 
-    let header = `
-╭──「 *${botName}* 」
-│ 👤 Utilisateur : ${pushName}
-│ ⚙️ Mode : ${botMode}
-│ 🔧 Préfixe : ${botPrefix || 'aucun'}
-│ 📦 Commandes : ${totalCommands}
-│ 🌐 Version : ${botVersion}
-│ ⏱️ Uptime : ${uptime}
-│ 🕐 Heure : ${time}
-│ 📅 Date : ${date}
-│ 💾 RAM : ${ram}
-╰──
+    const catEmoji = {
+        general: '✨', owner: '👑', admin: '👑', sudo: '👤',
+        group: '⚖️', moderation: '⚖️',
+        anti: '🛡️', security: '🛡️',
+        auto: '🤖',
+        downloader: '🎥', download: '🎥', media: '🎥',
+        ai: '🧠',
+        stalk: '🕵️',
+        converter: '🎨', logo: '🎨',
+        games: '🎮', game: '🎮', fun: '😂',
+        tools: '🔧', tool: '🔧', utility: '🔧',
+        settings: '⚙️', config: '⚙️',
+        social: '👋', search: '🔎', info: 'ℹ️', store: '🛒', misc: '📁',
+    };
+    const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 
-🚀 *Hébergement :* https://xhrishost.site
-📢 *Chaîne :* https://whatsapp.com/channel/0029Vark1I1AYlUR1G8YMX31
-${readmore}\n`;
+    const header =
+`╭──────────────────╮
+│   ✨ *${fb(botName)}* ✨
+├──────────────────┤
+│ ⏱️ *${fb('Uptime')}* : ${fb(uptime)}
+│ 🧠 *${fb('RAM')}* : ${fb(ram)}
+│ 🖥️ *${fb('Host')}* : ${fb(hostName)}
+│ ⚙️ *${fb('Mode')}* : ${fb(botMode || '')}
+│ 🔧 *${fb('Prefix')}* : ${prefix || fb('none')}
+│ 📦 *${fb('Commands')}* : ${fb(String(totalCommands))} ${fb('loaded')}
+│ 🌐 *${fb('Version')}* : ${fb(String(botVersion))}
+│ 🛡️ *${fb('License')}* : 🆓 ${fb('STANDARD')} (${fb('FREE')})
+╰──────────────────╯
 
-    const formatCategory = (category, gmds) => {
-        const title = `┌─「 ${category.toUpperCase()} 」\n`;
-        const body = gmds.map(g => `│ ◦ ${g}`).join('\n');
-        const footer = `\n└──\n`;
-        return `${title}${body}${footer}`;
+${fb('never try to succeed if you are not prepared to fail')}`;
+
+    const formatCategory = (category, cmds) => {
+        const emoji = catEmoji[category.toLowerCase()] || '📁';
+        const head = `╭✨ *${fb('Catégorie')} :* ${emoji} ${fb(titleCase(category))}`;
+        const body = cmds.map((c) => `│   ✦ ${prefix}${fb(c)}`).join('\n');
+        const foot = `╰───────────────────────────💎`;
+        return `${head}\n${body}\n${foot}`;
     };
 
-    let menu = header;
-    for (const [category, gmds] of Object.entries(categorized)) {
-        menu += formatCategory(category, gmds);
-    }
+    const blocks = Object.entries(categorized).map(([cat, cmds]) => formatCategory(cat, cmds));
+    const menu = `${header}\n\n${blocks.join('\n\n')}`;
 
     const xhrisMess = {
         image: { url: botPic },
-        caption: `${menu.trim()}\n\n> *${botFooter}*`,
+        caption: `${menu}\n\n> *${botFooter}*`,
         contextInfo: getContextInfo(sender, newsletterJid, botName)
     };
     await Prince.sendMessage(from, xhrisMess, { quoted: mek });

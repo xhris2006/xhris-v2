@@ -76,6 +76,14 @@ const PrinceAntiLink = async (Prince, message, antiLink) => {
     } catch (err) { console.error('Anti-link error:', err); }
 };
 
+const _normNum = (j) => (j || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+
+// All possible numeric identifiers (id / lid / pn / jid) of a participant
+const _partNums = (p) => [p.id, p.lid, p.pn, p.jid].filter(Boolean).map(_normNum);
+
+// True if the participant is an admin
+const _isAdminPart = (p) => p.admin === 'admin' || p.admin === 'superadmin';
+
 // Detects other WhatsApp bots by their Baileys message-ID signature (BAE5...)
 // and removes / silences them. `mode`: 'true'/'kick' = delete + remove, 'delete' = delete only.
 const PrinceAntiBot = async (Prince, message, mode) => {
@@ -86,34 +94,30 @@ const PrinceAntiBot = async (Prince, message, mode) => {
         if (!from || !from.endsWith('@g.us')) return;
 
         const msgId = message.key.id || '';
-        // Baileys-generated IDs start with "BAE5"; real phone/web clients do not.
-        if (!/^BAE5[0-9A-F]{6,}$/i.test(msgId)) return;
+        // Baileys-generated message IDs start with "BAE5"; real WhatsApp phone/web
+        // clients never use that prefix, so it's a reliable "this is a bot" signal.
+        if (!/^BAE5/i.test(msgId)) return;
 
         const sender = message.key.participant || message.key.remoteJid;
-        const norm = (j) => (j || '').split('@')[0].split(':')[0].replace(/\D/g, '');
-        const botNum = norm(Prince.user?.id);
-        const botLidNum = norm(Prince.user?.lid);
-        const senderNum = norm(sender);
-        if (senderNum && (senderNum === botNum || senderNum === botLidNum)) return;
+        const senderNum = _normNum(sender);
+        const botIds = [Prince.user?.id, Prince.user?.lid].filter(Boolean).map(_normNum);
+        if (senderNum && botIds.includes(senderNum)) return; // never the bot itself
 
         const meta = await Prince.groupMetadata(from);
-        const isPart = (p, num) => {
-            const idN = norm(p.id);
-            const lidN = norm(p.lid);
-            const pnN = norm(p.pn);
-            return idN === num || lidN === num || pnN === num;
-        };
-        const botIsAdmin = meta.participants.some(
-            (p) => (isPart(p, botNum) || isPart(p, botLidNum)) &&
-                   (p.admin === 'admin' || p.admin === 'superadmin'),
-        );
-        if (!botIsAdmin) return;
 
-        const senderIsAdmin = meta.participants.some(
-            (p) => isPart(p, senderNum) &&
-                   (p.admin === 'admin' || p.admin === 'superadmin'),
+        // Bot admin check — robust to LID. If we can't locate the bot in the
+        // participant list (LID mismatch), proceed anyway and let the API error
+        // out harmlessly rather than silently doing nothing.
+        const botPart = meta.participants.find((p) =>
+            _partNums(p).some((n) => botIds.includes(n)),
         );
-        if (senderIsAdmin) return; // never touch admins
+        if (botPart && !_isAdminPart(botPart)) return; // confirmed NOT admin → can't act
+
+        // Never touch admins
+        const senderPart = meta.participants.find((p) =>
+            _partNums(p).includes(senderNum),
+        );
+        if (senderPart && _isAdminPart(senderPart)) return;
 
         try { await Prince.sendMessage(from, { delete: message.key }); } catch (e) {}
 
@@ -123,13 +127,82 @@ const PrinceAntiBot = async (Prince, message, mode) => {
                 mentions: [sender],
             });
         } else {
-            try { await Prince.groupParticipantsUpdate(from, [sender], 'remove'); } catch (e) {}
+            let removed = false;
+            try {
+                const res = await Prince.groupParticipantsUpdate(from, [sender], 'remove');
+                removed = !Array.isArray(res) || res[0]?.status === '200' || res[0]?.status === 200 || !res[0]?.status;
+            } catch (e) { removed = false; }
             await Prince.sendMessage(from, {
-                text: `🤖 Anti-Bot active!\n@${senderNum} was detected as a bot and removed.`,
+                text: removed
+                    ? `🤖 Anti-Bot active!\n@${senderNum} was detected as a bot and removed.`
+                    : `🤖 Anti-Bot: bot detected from @${senderNum}, but I couldn't remove them (make me admin).`,
                 mentions: [sender],
             });
         }
     } catch (err) { console.error('Anti-bot error:', err); }
+};
+
+// ── Anti-Spam : flood detection ──────────────────────────────────────────────
+const _spamTracker = new Map(); // `${group}|${sender}` -> [timestamps]
+const SPAM_WINDOW = 7000;       // sliding window (ms)
+const SPAM_LIMIT = 6;           // messages allowed within the window
+
+// `mode`: 'true'/'kick' = delete + remove the flooder; 'delete' = only delete + warn.
+const PrinceAntiSpam = async (Prince, message, mode) => {
+    try {
+        if (!message?.message || message.key.fromMe) return;
+        if (!mode || mode === 'false') return;
+        const from = message.key.remoteJid;
+        if (!from || !from.endsWith('@g.us')) return;
+
+        const sender = message.key.participant || from;
+        const key = `${from}|${sender}`;
+        const now = Date.now();
+
+        let stamps = (_spamTracker.get(key) || []).filter((t) => now - t < SPAM_WINDOW);
+        stamps.push(now);
+        _spamTracker.set(key, stamps);
+        if (stamps.length < SPAM_LIMIT) return;
+
+        // Threshold reached → reset and act
+        _spamTracker.set(key, []);
+
+        const senderNum = _normNum(sender);
+        const botIds = [Prince.user?.id, Prince.user?.lid].filter(Boolean).map(_normNum);
+        if (senderNum && botIds.includes(senderNum)) return;
+
+        const meta = await Prince.groupMetadata(from);
+        const botPart = meta.participants.find((p) =>
+            _partNums(p).some((n) => botIds.includes(n)),
+        );
+        if (botPart && !_isAdminPart(botPart)) return;
+
+        const senderPart = meta.participants.find((p) =>
+            _partNums(p).includes(senderNum),
+        );
+        if (senderPart && _isAdminPart(senderPart)) return; // never touch admins
+
+        try { await Prince.sendMessage(from, { delete: message.key }); } catch (e) {}
+
+        if (mode === 'delete' || mode === 'warn') {
+            await Prince.sendMessage(from, {
+                text: `🚯 Anti-Spam: slow down @${senderNum}! You are sending messages too fast.`,
+                mentions: [sender],
+            });
+        } else {
+            let removed = false;
+            try {
+                const res = await Prince.groupParticipantsUpdate(from, [sender], 'remove');
+                removed = !Array.isArray(res) || res[0]?.status === '200' || res[0]?.status === 200 || !res[0]?.status;
+            } catch (e) { removed = false; }
+            await Prince.sendMessage(from, {
+                text: removed
+                    ? `🚯 Anti-Spam active!\n@${senderNum} was removed for flooding the chat.`
+                    : `🚯 Anti-Spam: @${senderNum} is flooding, but I couldn't remove them (make me admin).`,
+                mentions: [sender],
+            });
+        }
+    } catch (err) { console.error('Anti-spam error:', err); }
 };
 
 const PrinceStatusMention = async (Prince, message, mode) => {
@@ -507,6 +580,6 @@ const PrinceAntiDelete = async (Prince, deletedMsg, key, deleter, sender, botOwn
 };
 
 module.exports = {
-    logger, emojis, PrinceAutoReact, PrinceTechApi, PrinceApiKey, PrinceAntiLink, PrinceAntiBot,
+    logger, emojis, PrinceAutoReact, PrinceTechApi, PrinceApiKey, PrinceAntiLink, PrinceAntiBot, PrinceAntiSpam,
     PrinceStatusMention, PrinceAutoBio, PrinceChatBot, PrincePresence, PrinceAntiDelete, PrinceAnticall,
 };

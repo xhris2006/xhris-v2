@@ -1501,3 +1501,89 @@ gmd({
   await sendStalkCard(Prince, from, conText, caption, sPic(r));
   await react("✅");
 });
+
+
+// ─── WEBSCRAP : scrape a webpage (title, description, headings, links) ────────
+gmd({
+  pattern: "webscrap",
+  aliases: ["webscrape", "scrape", "scrap"],
+  react: "🕸️",
+  category: "tools",
+  description: "Scrape a webpage and extract its title, description, headings and links.",
+}, async (from, Prince, conText) => {
+  const { q, reply, react } = conText;
+
+  if (!q || !q.trim()) {
+    await react("❌");
+    return reply("❌ Provide a URL to scrape.\n\n*Example:* .webscrap https://example.com");
+  }
+
+  let url = q.trim();
+  if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+
+  await react("⏳");
+  try {
+    const { data, headers } = await axios.get(url, {
+      timeout: 25000,
+      maxContentLength: 5 * 1024 * 1024,
+      maxRedirects: 5,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    });
+
+    const html = typeof data === "string" ? data : String(data);
+    let title = "", desc = "";
+    const headings = [];
+    let links = [];
+
+    try {
+      const cheerio = require("cheerio");
+      const $ = cheerio.load(html);
+      title = $("title").first().text().trim();
+      desc =
+        $('meta[name="description"]').attr("content") ||
+        $('meta[property="og:description"]').attr("content") ||
+        "";
+      $("h1, h2").each((i, el) => {
+        if (headings.length >= 8) return;
+        const t = $(el).text().trim();
+        if (t) headings.push(t);
+      });
+      const seen = new Set();
+      $("a[href]").each((i, el) => {
+        if (links.length >= 12) return;
+        let href = $(el).attr("href");
+        if (!href) return;
+        try { href = new URL(href, url).toString(); } catch { return; }
+        if (!/^https?:\/\//i.test(href) || seen.has(href)) return;
+        seen.add(href);
+        links.push(href);
+      });
+    } catch (parseErr) {
+      // cheerio unavailable → light regex fallback
+      const tm = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      title = tm ? tm[1].trim() : "";
+      const dm = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
+      desc = dm ? dm[1] : "";
+      links = [...new Set([...html.matchAll(/href=["'](https?:\/\/[^"']+)["']/gi)].map((m) => m[1]))].slice(0, 12);
+    }
+
+    const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
+    let out = `🕸️ *WEB SCRAPE*\n\n🔗 *URL:* ${url}\n`;
+    if (title) out += `📌 *Title:* ${clean(title)}\n`;
+    if (desc) out += `📝 *Description:* ${clean(desc).slice(0, 300)}\n`;
+    if (headings.length) out += `\n*🔹 Headings:*\n` + headings.map((h) => `• ${clean(h).slice(0, 90)}`).join("\n") + "\n";
+    if (links.length) out += `\n*🔗 Links:*\n` + links.map((l) => `• ${l}`).join("\n");
+    if (!title && !desc && !links.length) out += `\n_No readable content found._`;
+    if (out.length > 4000) out = out.slice(0, 3990) + "…";
+
+    await reply(out);
+    await react("✅");
+  } catch (e) {
+    await react("❌");
+    if (e.response?.status) return reply(`❌ The site returned status ${e.response.status}.`);
+    return reply("❌ Failed to scrape the page: " + e.message);
+  }
+});

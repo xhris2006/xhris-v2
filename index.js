@@ -27,6 +27,7 @@ const {
     PrinceAutoReact,
     PrinceAntiLink,
     PrinceAntiBot,
+    PrinceAntiSpam,
     PrinceAutoBio,
     PrinceChatBot,
     loadSession,
@@ -384,6 +385,15 @@ async function startPrince() {
                     );
                     if (groupAntiBot !== "false") {
                         await PrinceAntiBot(Prince, message, groupAntiBot);
+                    }
+
+                    const groupAntiSpam = getGroupSetting(
+                        chatJid,
+                        "ANTISPAM",
+                        "false",
+                    );
+                    if (groupAntiSpam !== "false") {
+                        await PrinceAntiSpam(Prince, message, groupAntiSpam);
                     }
 
                     const groupStatusMention = getGroupSetting(

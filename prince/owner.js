@@ -728,6 +728,53 @@ gmd({
   );
 });
 
+gmd({
+  pattern: "clearchat",
+  aliases: ["clearchats", "deletechat", "viderchat", "vider"],
+  react: "🗑️",
+  category: "owner",
+  description: "Clear / empty the current chat (like selecting the conversation and deleting it).",
+}, async (from, Prince, conText) => {
+  const { mek, reply, react, isSuperUser } = conText;
+
+  if (!isSuperUser) {
+    await react("❌");
+    return reply("Owner Only Command!");
+  }
+
+  const ts = mek?.messageTimestamp || Math.floor(Date.now() / 1000);
+  const lastMessages = [{ key: mek.key, messageTimestamp: ts }];
+
+  try {
+    // Preferred: delete the whole conversation (removes it + empties it)
+    await Prince.chatModify({ delete: true, lastMessages }, from);
+    await react("✅");
+    return reply("🗑️ Chat cleared.");
+  } catch (eDelete) {
+    // Fallback: clear the messages in place
+    try {
+      await Prince.chatModify(
+        {
+          clear: {
+            messages: lastMessages.map((m) => ({
+              id: m.key.id,
+              fromMe: m.key.fromMe,
+              timestamp: m.messageTimestamp,
+            })),
+          },
+        },
+        from,
+      );
+      await react("✅");
+      return reply("🗑️ Chat cleared.");
+    } catch (eClear) {
+      console.error("clearchat error:", eClear);
+      await react("❌");
+      return reply("❌ Failed to clear the chat: " + (eClear.message || eDelete.message));
+    }
+  }
+});
+
 // ─── CATALOG : fetch a WhatsApp Business account's product catalog ────────────
 gmd({
   pattern: "catalog",
