@@ -202,6 +202,71 @@ gmd({
 });
 
 gmd({
+    pattern: "correct",
+    aliases: ["corriger", "correcteur", "corrige", "ortho", "grammar"],
+    category: "tools",
+    react: "✍️",
+    description: "Corrige l'orthographe, la grammaire, la conjugaison et la ponctuation d'un texte. Usage: correct <texte> ou répondre à un message avec correct",
+}, async (from, Prince, conText) => {
+    const { q, mek, reply, react, quoted, quotedMsg, sender, newsletterJid, botName, botFooter, PrinceTechApi, PrinceApiKey } = conText;
+
+    // Text comes from the argument, or from the replied message
+    let text = (q || "").trim();
+    if (!text && quotedMsg) {
+        const qMsg =
+            quoted?.conversation ||
+            quoted?.extendedTextMessage?.text ||
+            quoted?.imageMessage?.caption ||
+            quoted?.videoMessage?.caption ||
+            quoted?.text;
+        if (typeof qMsg === "string") text = qMsg.trim();
+    }
+
+    if (!text) {
+        await react("❌");
+        return reply("✍️ *Correcteur de texte*\n\nUsage:\n1. Direct: .correct votre texte ici\n2. Réponse: répondez à un message avec .correct");
+    }
+
+    await react("⏳");
+    try {
+        const prompt =
+            `Corrige uniquement les fautes d'orthographe, de grammaire, de conjugaison et de ponctuation du texte suivant. ` +
+            `Garde exactement la même langue, le même sens et le même registre. ` +
+            `Réponds UNIQUEMENT avec le texte corrigé, sans guillemets, sans explication ni commentaire.\n\nTexte: ${text}`;
+
+        const res = await axios.get(`${PrinceTechApi}/api/ai/gpt`, {
+            params: { apikey: PrinceApiKey, q: prompt },
+            timeout: 30000,
+        });
+        const d = res.data;
+        let corrected = d?.result || d?.response || d?.answer || d?.text || d?.data || "";
+
+        if (typeof corrected !== "string" || !corrected.trim()) {
+            await react("❌");
+            return reply("❌ Impossible de corriger le texte pour le moment. Réessayez.");
+        }
+        // Strip wrapping quotes the model may add
+        corrected = corrected.trim().replace(/^["'«»\s]+|["'«»\s]+$/g, "").trim();
+
+        const changed = corrected !== text.trim();
+        await react("✅");
+        await Prince.sendMessage(from, {
+            text:
+                `✍️ *Correction*\n\n` +
+                `📝 *Original:*\n${text}\n\n` +
+                `✅ *Corrigé:*\n${corrected}` +
+                (changed ? "" : "\n\n_Aucune faute détectée._") +
+                `\n\n> *${botFooter}*`,
+            contextInfo: getContextInfo(sender, newsletterJid, botName),
+        }, { quoted: mek });
+    } catch (e) {
+        console.error("Correct error:", e);
+        await react("❌");
+        await reply("❌ Échec de la correction. Réessayez plus tard.");
+    }
+});
+
+gmd({
     pattern: "qrcode",
     aliases: ["genqr", "t2qr", "makeqr"],
     category: "tools",
