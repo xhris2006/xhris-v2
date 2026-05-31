@@ -230,9 +230,10 @@ gmd({
     await react("⏳");
     try {
         const prompt =
-            `Corrige uniquement les fautes d'orthographe, de grammaire, de conjugaison et de ponctuation du texte suivant. ` +
-            `Garde exactement la même langue, le même sens et le même registre. ` +
-            `Réponds UNIQUEMENT avec le texte corrigé, sans guillemets, sans explication ni commentaire.\n\nTexte: ${text}`;
+            `Detect the language of the following text and correct only its spelling, grammar, ` +
+            `conjugation and punctuation. Keep the exact same language (works for French, English and any other), ` +
+            `the same meaning and the same register. Reply ONLY with the corrected text, ` +
+            `with no quotes, no labels, no explanation and no comment.\n\nText: ${text}`;
 
         const res = await axios.get(`${PrinceTechApi}/api/ai/gpt`, {
             params: { apikey: PrinceApiKey, q: prompt },
@@ -248,15 +249,9 @@ gmd({
         // Strip wrapping quotes the model may add
         corrected = corrected.trim().replace(/^["'«»\s]+|["'«»\s]+$/g, "").trim();
 
-        const changed = corrected !== text.trim();
         await react("✅");
         await Prince.sendMessage(from, {
-            text:
-                `✍️ *Correction*\n\n` +
-                `📝 *Original:*\n${text}\n\n` +
-                `✅ *Corrigé:*\n${corrected}` +
-                (changed ? "" : "\n\n_Aucune faute détectée._") +
-                `\n\n> *${botFooter}*`,
+            text: corrected,
             contextInfo: getContextInfo(sender, newsletterJid, botName),
         }, { quoted: mek });
     } catch (e) {
@@ -869,41 +864,59 @@ gmd({
     react: "📄",
     description: "Create a PDF from text. Usage: .pdf <name> <text> or reply to message",
 }, async (from, Prince, conText) => {
-    const { q, mek, reply, react, quoted, quotedMsg, config } = conText;
+    const { q, mek, reply, react, quoted, quotedMsg, PrinceApiKey } = conText;
     try {
-        const input = q?.trim() || "";
-        const parts = input.split(/\s+/);
-        const pdfName = parts[0] || "";
-        let content = parts.slice(1).join(" ");
+        const arg = (q || "").trim();
 
-        if (!content && quotedMsg) {
-            content = quoted?.conversation || quoted?.extendedTextMessage?.text || quoted?.imageMessage?.caption || quoted?.text || "";
+        // Content priority: the replied message, otherwise the whole argument
+        const quotedText = quotedMsg
+            ? (quoted?.conversation ||
+               quoted?.extendedTextMessage?.text ||
+               quoted?.imageMessage?.caption ||
+               quoted?.videoMessage?.caption ||
+               quoted?.text || "")
+            : "";
+
+        let content = "";
+        let fileName = "document";
+
+        if (quotedText && typeof quotedText === "string") {
+            content = quotedText.trim();
+            if (arg) fileName = arg;            // optional custom name when replying
+        } else if (arg) {
+            content = arg;                       // no reply → the text itself is the content
         }
 
-        if (typeof content !== "string") content = "";
-
-        if (!pdfName) {
-            await react("❌");
-            return reply("📄 *PDF Creator*\n\nUsage:\n.pdf <name> <text>\n.pdf <name> (reply to a message)");
-        }
         if (!content) {
             await react("❌");
-            return reply("❌ Please provide content for the PDF.");
+            return reply("📄 *PDF Creator*\n\nUsage:\n• .pdf <your text>\n• .pdf <name> (reply to a message)\n• Reply to a message with .pdf");
         }
 
         await react("⏳");
 
         const res = await axios.get("https://api.princetechn.com/api/tools/topdf", {
-            params: { apikey: "prince", query: content },
+            params: { apikey: PrinceApiKey || "prince_api_56yjJ568dte4", query: content },
             responseType: "arraybuffer",
+            timeout: 60000,
+            validateStatus: () => true,
         });
 
-        const fileName = pdfName.endsWith(".pdf") ? pdfName : `${pdfName}.pdf`;
+        const buf = Buffer.from(res.data);
+        // Ensure we actually got a PDF and not a JSON/HTML error response
+        if (buf.slice(0, 5).toString("latin1") !== "%PDF-") {
+            let apiMsg = "";
+            try { apiMsg = JSON.parse(buf.toString("utf8"))?.error || ""; } catch (_) {}
+            await react("❌");
+            return reply("❌ Failed to create PDF" + (apiMsg ? `: ${apiMsg}` : ". The text may be too long — try a shorter message."));
+        }
+
+        fileName = fileName.replace(/[^\w\s.-]/g, "").trim() || "document";
+        if (!/\.pdf$/i.test(fileName)) fileName += ".pdf";
 
         await Prince.sendMessage(from, {
-            document: Buffer.from(res.data),
+            document: buf,
             mimetype: "application/pdf",
-            fileName: fileName,
+            fileName,
             caption: `📄 *${fileName}*`,
         }, { quoted: mek });
         await react("✅");
