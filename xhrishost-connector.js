@@ -179,7 +179,16 @@ async function handleCommand(sock, msg, ctx = {}) {
   const senderNum = normNum(sender);
   const authJid = senderNum ? (senderNum + '@s.whatsapp.net') : chatJid;
 
-  const send = (text) => sock.sendMessage(chatJid, { text });
+  // Mirror the bot's normal reply path so messages don't stay "pending":
+  // mark the incoming message as read (once) and quote it when replying.
+  let _markedRead = false;
+  const send = async (text) => {
+    if (!_markedRead) {
+      _markedRead = true;
+      try { await sock.readMessages([msg.key]); } catch (e) {}
+    }
+    return sock.sendMessage(chatJid, { text }, { quoted: msg });
+  };
   const session = getSession(authJid);
 
   // ── Confirmation transfert en attente (1 ou 2) ─────────────────────────

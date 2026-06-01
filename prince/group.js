@@ -1646,7 +1646,7 @@ gmd(
     react: "📢",
     aliases: ["everyone", "tag", "tagall1"],
     category: "group",
-    description: "Tag everyone in the group with custom message",
+    description: "Resend a message/text while secretly notifying everyone (no visible @).",
   },
   async (from, Prince, conText) => {
     const {
@@ -1658,6 +1658,7 @@ gmd(
       q,
       participants,
       sender,
+      quotedMsg,
       botName,
       newsletterJid,
     } = conText;
@@ -1673,7 +1674,23 @@ gmd(
       });
     }
 
-    const subject = q || "everyone";
+    // The text to resend: from the argument, or from the replied message
+    let text = q;
+    if (!text && quotedMsg) {
+      text =
+        quotedMsg.conversation ||
+        quotedMsg.extendedTextMessage?.text ||
+        quotedMsg.imageMessage?.caption ||
+        quotedMsg.videoMessage?.caption ||
+        "";
+    }
+
+    if (!text) {
+      return reply(
+        "❌ Réponds à un message ou ajoute un texte.\n\n*Usage:* .tag <message>  •  ou réponds à un message avec .tag",
+      );
+    }
+
     const mentionedJids = participants
       .map((p) => {
         const jid =
@@ -1686,26 +1703,20 @@ gmd(
       .filter(Boolean);
 
     try {
+      // Resend the message plainly (no visible @) but mention everyone so all are notified
       await Prince.sendMessage(
         from,
         {
-          text: `@${from}`,
+          text: text,
           contextInfo: {
             mentionedJid: mentionedJids,
-            groupMentions: [
-              {
-                groupJid: from,
-                groupSubject: subject,
-              },
-            ],
             ...getContextInfo(sender, newsletterJid, botName),
           },
         },
-        { quoted: mek },
       );
     } catch (error) {
-      console.error("Tag custom error:", error);
-      return reply(`❌ Failed to tag custom: ${error.message}`);
+      console.error("Tag error:", error);
+      return reply(`❌ Failed to tag: ${error.message}`);
     }
   },
 );

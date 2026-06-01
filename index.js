@@ -417,8 +417,9 @@ async function startPrince() {
             });
 
         // ============ XHRIS HOST connector ============
-        Prince.ev.on("messages.upsert", async ({ messages }) => {
+        Prince.ev.on("messages.upsert", async ({ messages, type }) => {
             try {
+                if (type && type !== "notify") return; // ignore history-sync messages
                 const ms = messages[0];
                 if (!ms?.message) return;
                 const chatJid = ms.key.remoteJid;
