@@ -228,14 +228,48 @@ Rejoins-nous sur la chaîne pour les nouveautés !
 });
 
 
-gmd({
-  pattern: "save",
-  aliases: ['sv', 's', 'sav'],
-  react: "⚡",
-  category: "tools",
-  description: "Save messages (supports images, videos, audio, stickers, and text).",
-}, async (from, Prince, conText) => {
-  const { mek, reply, react, sender, isSuperUser, getMediaBuffer } = conText;
+// ─── Helper: transformer un message cité en payload envoyable ────────────────
+async function buildSavePayload(quotedMsg, getMediaBuffer) {
+  // Déballer les messages view-once (fréquents dans les statuts)
+  const m = quotedMsg?.viewOnceMessageV2?.message
+         || quotedMsg?.viewOnceMessage?.message
+         || quotedMsg?.viewOnceMessageV2Extension?.message
+         || quotedMsg;
+
+  if (m?.imageMessage) {
+    const buffer = await getMediaBuffer(m.imageMessage, "image");
+    return { image: buffer, caption: m.imageMessage.caption || "" };
+  }
+  if (m?.videoMessage) {
+    const buffer = await getMediaBuffer(m.videoMessage, "video");
+    return { video: buffer, caption: m.videoMessage.caption || "" };
+  }
+  if (m?.audioMessage) {
+    const buffer = await getMediaBuffer(m.audioMessage, "audio");
+    return { audio: buffer, mimetype: m.audioMessage.mimetype || "audio/mp4", ptt: m.audioMessage.ptt || false };
+  }
+  if (m?.stickerMessage) {
+    const buffer = await getMediaBuffer(m.stickerMessage, "sticker");
+    return { sticker: buffer };
+  }
+  if (m?.documentMessage) {
+    const buffer = await getMediaBuffer(m.documentMessage, "document");
+    return { document: buffer, mimetype: m.documentMessage.mimetype || "application/octet-stream", fileName: m.documentMessage.fileName || "file", caption: m.documentMessage.caption || "" };
+  }
+  if (m?.conversation || m?.extendedTextMessage?.text) {
+    return { text: m.conversation || m.extendedTextMessage.text };
+  }
+  return null;
+}
+
+// ─── Helper: JID du DM personnel de l'owner ──────────────────────────────────
+function ownerDmJid(ownerNumber, fallback) {
+  const digits = String(ownerNumber || "").replace(/\D/g, "");
+  return digits ? `${digits}@s.whatsapp.net` : fallback;
+}
+
+async function saveQuotedToOwner(Prince, conText, notFoundMsg) {
+  const { mek, reply, react, sender, isSuperUser, ownerNumber, getMediaBuffer } = conText;
 
   if (!isSuperUser) {
     return reply(`❌ Owner Only Command!`);
@@ -244,36 +278,43 @@ gmd({
   const quotedMsg = mek.message?.extendedTextMessage?.contextInfo?.quotedMessage;
 
   if (!quotedMsg) {
-    return reply(`⚠️ Please reply to/quote a message.`);
+    return reply(notFoundMsg);
   }
 
   try {
-    let mediaData;
-
-    if (quotedMsg.imageMessage) {
-      const buffer = await getMediaBuffer(quotedMsg.imageMessage, "image");
-      mediaData = { image: buffer, caption: quotedMsg.imageMessage.caption || "" };
-    } else if (quotedMsg.videoMessage) {
-      const buffer = await getMediaBuffer(quotedMsg.videoMessage, "video");
-      mediaData = { video: buffer, caption: quotedMsg.videoMessage.caption || "" };
-    } else if (quotedMsg.audioMessage) {
-      const buffer = await getMediaBuffer(quotedMsg.audioMessage, "audio");
-      mediaData = { audio: buffer, mimetype: "audio/mp4" };
-    } else if (quotedMsg.stickerMessage) {
-      const buffer = await getMediaBuffer(quotedMsg.stickerMessage, "sticker");
-      mediaData = { sticker: buffer };
-    } else if (quotedMsg.conversation || quotedMsg.extendedTextMessage?.text) {
-      mediaData = { text: quotedMsg.conversation || quotedMsg.extendedTextMessage.text };
-    } else {
+    const payload = await buildSavePayload(quotedMsg, getMediaBuffer);
+    if (!payload) {
       return reply(`❌ Unsupported message type.`);
     }
 
-    await Prince.sendMessage(sender, mediaData, { quoted: mek });
+    const ownerDm = ownerDmJid(ownerNumber, sender);
+    await Prince.sendMessage(ownerDm, payload);
     await react("✅");
+    await reply(`✅ Saved to your DM.`);
   } catch (error) {
     console.error("Save Error:", error);
-    await reply(`❌ Failed to save the message. Error: ${error.message}`);
+    await reply(`❌ Failed to save. Error: ${error.message}`);
   }
+}
+
+gmd({
+  pattern: "save",
+  aliases: ['sv', 's', 'sav'],
+  react: "⚡",
+  category: "tools",
+  description: "Save the replied message/media to your personal DM.",
+}, async (from, Prince, conText) => {
+  await saveQuotedToOwner(Prince, conText, `⚠️ Please reply to/quote a message.`);
+});
+
+gmd({
+  pattern: "savestatus",
+  aliases: ['savestatut', 'ss', 'sstatus'],
+  react: "⚡",
+  category: "tools",
+  description: "Reply to a status to save it (media/text) to your personal DM.",
+}, async (from, Prince, conText) => {
+  await saveQuotedToOwner(Prince, conText, `⚠️ Please reply to a status update.`);
 });
 
 
