@@ -520,21 +520,23 @@ async function resolveBlockTarget(conText, from, Prince) {
   const { mentionedJid, quotedUser, q, groupMetadata } = conText;
   const inGroup = from.endsWith("@g.us");
 
-  // Priority: explicit mention > number in text > replied user
+  // Priority: explicit mention > number typed in text > replied user
   let raw = (mentionedJid && mentionedJid[0]) || null;
   const fromMention = !!raw;
+  let fromNumber = false;
   if (!raw && q) {
     const num = q.replace(/[^0-9]/g, "");
-    if (num.length >= 8) raw = num + "@s.whatsapp.net";
+    if (num.length >= 8) { raw = num + "@s.whatsapp.net"; fromNumber = true; }
   }
   if (!raw) raw = quotedUser || null;
 
-  // DM fix: in a 1-on-1 chat the only blockable party is the chat partner.
-  // WhatsApp omits the quoted participant on DM replies (raw stays empty), and
-  // `sender` would be the owner for this fromMe command — so target `from`
-  // (the partner) for both a plain `.block` and a `.block` reply in a DM.
-  if (!fromMention && !inGroup && from.endsWith("@s.whatsapp.net") &&
-      (!raw || String(raw).endsWith("@lid"))) {
+  // DM: in a 1-on-1 chat the only blockable party is the chat partner = `from`
+  // (the remoteJid of the chat). This covers BOTH a plain `.block` and a
+  // `.block` reply in a DM, where WhatsApp omits the quoted participant. Modern
+  // WhatsApp may expose the DM partner as @s.whatsapp.net OR @lid, so accept
+  // both. Only override when the owner didn't explicitly mention/type a number.
+  if (!fromMention && !fromNumber && !inGroup &&
+      (from.endsWith("@s.whatsapp.net") || from.endsWith("@lid"))) {
     raw = from;
   }
 
@@ -728,6 +730,175 @@ gmd({
   );
 });
 
+// ─── GC FORWARD ──────────────────────────────────────────────────────────────
+// Forward a replied message (or typed text) to a preset list of groups.
+const GC_FORWARD_KEY = "GC_FORWARD_LIST";
+
+function getGcForwardList(getSetting) {
+  const list = getSetting(GC_FORWARD_KEY, []);
+  return Array.isArray(list) ? list : [];
+}
+
+// Resolve which group to add/remove: an explicit @g.us in the text, else the
+// current group (when the command is used inside one).
+function resolveGcTarget(q, from, isGroup) {
+  const typed = (q || "").trim().replace(/\s+/g, "");
+  const m = typed.match(/[\w-]+@g\.us/);
+  if (m) return m[0];
+  if (isGroup) return from;
+  return null;
+}
+
+gmd({
+  pattern: "addgcforward",
+  aliases: ["addgc", "setgcforward", "gcforwardadd"],
+  react: "📥",
+  category: "owner",
+  description: "Add a group to the GC-forward list (use inside the group or pass its JID).",
+}, async (from, Prince, conText) => {
+  const { reply, react, isSuperUser, isGroup, q, getSetting, setSetting } = conText;
+  if (!isSuperUser) return reply("❌ Owner Only Command!");
+
+  const target = resolveGcTarget(q, from, isGroup);
+  if (!target) {
+    await react("❌");
+    return reply("❌ Use this *inside the group* you want to add, or pass the group JID.\n\n*Example:* .addgcforward 120363xxxxxx@g.us");
+  }
+
+  const list = getGcForwardList(getSetting);
+  if (list.includes(target)) {
+    await react("⚠️");
+    return reply(`⚠️ This group is already in the forward list (${list.length} total).`);
+  }
+  list.push(target);
+  setSetting(GC_FORWARD_KEY, list);
+  await react("✅");
+  return reply(`✅ Group added to GC-forward list.\n📋 Total groups: *${list.length}*`);
+});
+
+gmd({
+  pattern: "delgcforward",
+  aliases: ["delgc", "removegcforward", "gcforwarddel"],
+  react: "🗑️",
+  category: "owner",
+  description: "Remove a group from the GC-forward list (or 'all' to clear).",
+}, async (from, Prince, conText) => {
+  const { reply, react, isSuperUser, isGroup, q, getSetting, setSetting } = conText;
+  if (!isSuperUser) return reply("❌ Owner Only Command!");
+
+  if ((q || "").trim().toLowerCase() === "all") {
+    setSetting(GC_FORWARD_KEY, []);
+    await react("✅");
+    return reply("✅ GC-forward list cleared.");
+  }
+
+  const target = resolveGcTarget(q, from, isGroup);
+  if (!target) {
+    await react("❌");
+    return reply("❌ Use this *inside the group* to remove, pass its JID, or use `.delgcforward all`.");
+  }
+
+  const list = getGcForwardList(getSetting);
+  const idx = list.indexOf(target);
+  if (idx === -1) {
+    await react("⚠️");
+    return reply("⚠️ This group is not in the forward list.");
+  }
+  list.splice(idx, 1);
+  setSetting(GC_FORWARD_KEY, list);
+  await react("✅");
+  return reply(`✅ Group removed from GC-forward list.\n📋 Remaining groups: *${list.length}*`);
+});
+
+gmd({
+  pattern: "listgcforward",
+  aliases: ["listgc", "gcforwardlist"],
+  react: "📋",
+  category: "owner",
+  description: "List the groups in the GC-forward list.",
+}, async (from, Prince, conText) => {
+  const { reply, react, isSuperUser, getSetting } = conText;
+  if (!isSuperUser) return reply("❌ Owner Only Command!");
+
+  const list = getGcForwardList(getSetting);
+  if (list.length === 0) {
+    await react("📭");
+    return reply("📭 GC-forward list is empty. Add a group with `.addgcforward` inside it.");
+  }
+
+  let text = `📋 *GC-Forward Groups (${list.length})*\n\n`;
+  let i = 1;
+  for (const jid of list) {
+    let name = "";
+    try {
+      const meta = await Prince.groupMetadata(jid);
+      if (meta?.subject) name = ` — ${meta.subject}`;
+    } catch {}
+    text += `${i++}. ${jid}${name}\n`;
+  }
+  await react("✅");
+  return reply(text.trim());
+});
+
+gmd({
+  pattern: "forwardgc",
+  aliases: ["fgc", "forwardgroup", "gcforward", "bcgc"],
+  react: "📤",
+  category: "owner",
+  description: "Forward the replied message (or typed text) to all GC-forward groups.",
+}, async (from, Prince, conText) => {
+  const { reply, react, isSuperUser, mek, q, getSetting } = conText;
+  if (!isSuperUser) return reply("❌ Owner Only Command!");
+
+  const list = getGcForwardList(getSetting);
+  if (list.length === 0) {
+    await react("❌");
+    return reply("❌ No groups set. Add one with `.addgcforward` inside the group.");
+  }
+
+  const ctxInfo = mek.message?.extendedTextMessage?.contextInfo;
+  const quotedMsg = ctxInfo?.quotedMessage;
+  const text = (q || "").trim();
+
+  if (!quotedMsg && !text) {
+    await react("❌");
+    return reply("❌ Reply to a message or type the text to forward.\n\n*Example:* .forwardgc Hello everyone");
+  }
+
+  // Forward the quoted message natively (keeps media/format), else send text.
+  let payload;
+  if (quotedMsg) {
+    payload = {
+      forward: {
+        key: {
+          remoteJid: ctxInfo.remoteJid || from,
+          fromMe: false,
+          id: ctxInfo.stanzaId || undefined,
+          participant: ctxInfo.participant || undefined,
+        },
+        message: quotedMsg,
+      },
+    };
+  } else {
+    payload = { text };
+  }
+
+  let ok = 0, fail = 0;
+  for (const jid of list) {
+    try {
+      await Prince.sendMessage(jid, payload);
+      ok++;
+    } catch (e) {
+      fail++;
+      console.error(`[FORWARDGC] failed for ${jid}:`, e.message);
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+  }
+
+  await react("✅");
+  return reply(`📤 Forwarded to *${ok}* group(s).${fail ? `\n⚠️ Failed: *${fail}*` : ""}`);
+});
+
 gmd({
   pattern: "clearchat",
   aliases: ["clearchats", "deletechat", "viderchat", "vider"],
@@ -776,29 +947,49 @@ gmd({
     }
   };
 
+  // App-state sync keys are shared by the phone shortly after connect. If the
+  // command runs before they arrive, chatModify throws. Resync the collections
+  // and retry a few times with short waits so the keys have time to land.
+  const resyncAndRetry = async () => {
+    const collections = ["critical_unblock_low", "regular_high", "regular_low", "regular"];
+    for (let i = 0; i < 4; i++) {
+      if (typeof Prince.resyncAppState === "function") {
+        try { await Prince.resyncAppState(collections, i === 0); } catch (_) {}
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        await attempt();
+        return true;
+      } catch (e) {
+        if (!isKeyErr(e)) throw e; // a different failure — bubble it up
+      }
+    }
+    return false;
+  };
+
   try {
     await attempt();
     await react("✅");
     return reply("🗑️ Chat cleared.");
   } catch (e) {
-    // App-state keys missing → try to resync them once, then retry
-    if (isKeyErr(e) && typeof Prince.resyncAppState === "function") {
+    // App-state keys missing → resync + retry, then report if still unavailable
+    if (isKeyErr(e)) {
       try {
-        await Prince.resyncAppState(
-          ["critical_unblock_low", "regular_high", "regular"],
-          true,
-        );
-        await attempt();
-        await react("✅");
-        return reply("🗑️ Chat cleared.");
+        if (await resyncAndRetry()) {
+          await react("✅");
+          return reply("🗑️ Chat cleared.");
+        }
       } catch (e2) {
+        console.error("clearchat retry error:", e2);
         await react("❌");
-        return reply(
-          "❌ Can't clear the chat yet — the bot's app-state sync keys aren't available.\n\n" +
-            "This usually fixes itself once the linked phone syncs: open WhatsApp on the phone and keep it online for a moment, then try *.clearchat* again.\n" +
-            "If it keeps failing, re-link the bot so it receives fresh sync keys.",
-        );
+        return reply("❌ Failed to clear the chat: " + e2.message);
       }
+      await react("❌");
+      return reply(
+        "❌ Can't clear the chat yet — the bot's app-state sync keys aren't available.\n\n" +
+          "This usually fixes itself once the linked phone syncs: open WhatsApp on the phone and keep it online for a moment, then try *.clearchat* again.\n" +
+          "If it keeps failing, re-link the bot so it receives fresh sync keys.",
+      );
     }
     console.error("clearchat error:", e);
     await react("❌");

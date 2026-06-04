@@ -857,68 +857,202 @@ gmd({
     }
 });
 
+// Render plain text into a multi-page PDF buffer (pdf-lib, word-wrapped A4).
+async function renderTextPdf(text) {
+    const { PDFDocument, StandardFonts, rgb } = require("pdf-lib");
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const pageW = 595, pageH = 842, margin = 50, fontSize = 12, lineH = fontSize * 1.45;
+    const maxW = pageW - margin * 2;
+
+    const lines = [];
+    for (const para of String(text).split(/\r?\n/)) {
+        if (para === "") { lines.push(""); continue; }
+        let line = "";
+        for (const word of para.split(/\s+/)) {
+            const test = line ? line + " " + word : word;
+            if (font.widthOfTextAtSize(test, fontSize) > maxW && line) {
+                lines.push(line);
+                line = word;
+            } else {
+                line = test;
+            }
+        }
+        lines.push(line);
+    }
+
+    let page = pdfDoc.addPage([pageW, pageH]);
+    let y = pageH - margin;
+    for (const ln of lines) {
+        if (y < margin) { page = pdfDoc.addPage([pageW, pageH]); y = pageH - margin; }
+        // strip characters Helvetica can't encode (e.g. emoji) to avoid throwing
+        const safe = ln.replace(/[^\x00-\xFF]/g, "");
+        page.drawText(safe, { x: margin, y, size: fontSize, font, color: rgb(0, 0, 0) });
+        y -= lineH;
+    }
+    return Buffer.from(await pdfDoc.save());
+}
+
+// Embed an image buffer into a pdf-lib doc, trying JPEG/PNG directly then sharp.
+async function embedAnyImage(pdfDoc, raw) {
+    try { return await pdfDoc.embedJpg(raw); } catch (_) {}
+    try { return await pdfDoc.embedPng(raw); } catch (_) {}
+    try {
+        const jpg = await sharp(raw).flatten({ background: "#ffffff" }).jpeg({ quality: 90 }).toBuffer();
+        return await pdfDoc.embedJpg(jpg);
+    } catch (e) {
+        console.error("[PDF] embed image failed:", e.message);
+        return null;
+    }
+}
+
 gmd({
     pattern: "pdf",
     aliases: ["topdf", "makepdf", "createpdf"],
     category: "tools",
     react: "📄",
-    description: "Create a PDF from text. Usage: .pdf <name> <text> or reply to message",
+    description: "Make a PDF from text and/or image(s). Reply to a message/media, or send media with caption .pdf [name]. Reply to the result with '1 <name>' to rename.",
 }, async (from, Prince, conText) => {
-    const { q, mek, reply, react, quoted, quotedMsg, PrinceApiKey } = conText;
+    const { q, mek, reply, react, quoted, getMediaBuffer, PrinceApiKey } = conText;
     try {
         const arg = (q || "").trim();
 
-        // Content priority: the replied message, otherwise the whole argument
-        const quotedText = quotedMsg
-            ? (quoted?.conversation ||
-               quoted?.extendedTextMessage?.text ||
-               quoted?.imageMessage?.caption ||
-               quoted?.videoMessage?.caption ||
-               quoted?.text || "")
-            : "";
+        // ── Collect image(s): replied media + media sent with the command ──
+        const imageBuffers = [];
+        const grabImage = async (mediaMsg, type) => {
+            try {
+                const b = await getMediaBuffer(mediaMsg, type);
+                if (b && b.length) imageBuffers.push(b);
+            } catch (e) { console.error("[PDF] media download:", e.message); }
+        };
+        const unwrap = (msg) =>
+            msg?.viewOnceMessageV2?.message ||
+            msg?.viewOnceMessage?.message ||
+            msg || {};
 
-        let content = "";
+        // a) the replied message
+        const rq = unwrap(quoted);
+        if (rq.imageMessage) await grabImage(rq.imageMessage, "image");
+        else if (rq.stickerMessage) await grabImage(rq.stickerMessage, "sticker");
+        // b) media attached to the command message itself
+        const cm = unwrap(mek.message);
+        if (cm.imageMessage) await grabImage(cm.imageMessage, "image");
+        else if (cm.stickerMessage) await grabImage(cm.stickerMessage, "sticker");
+
+        // ── Collect text from the replied message ──
+        const quotedText =
+            quoted?.conversation ||
+            quoted?.extendedTextMessage?.text ||
+            quoted?.imageMessage?.caption ||
+            quoted?.videoMessage?.caption ||
+            quoted?.documentMessage?.caption ||
+            quoted?.text || "";
+
+        // ── Decide filename vs content ──
+        // With media: the typed arg is the filename, replied text becomes a page.
+        // Without media: replied text is content (arg = name), else arg is content.
         let fileName = "document";
+        let textContent = "";
+        const hasMedia = imageBuffers.length > 0;
 
-        if (quotedText && typeof quotedText === "string") {
-            content = quotedText.trim();
-            if (arg) fileName = arg;            // optional custom name when replying
+        if (hasMedia) {
+            if (arg) fileName = arg;
+            if (quotedText) textContent = quotedText.trim();
+        } else if (quotedText) {
+            textContent = quotedText.trim();
+            if (arg) fileName = arg;
         } else if (arg) {
-            content = arg;                       // no reply → the text itself is the content
+            textContent = arg;
         }
 
-        if (!content) {
+        if (!hasMedia && !textContent) {
             await react("❌");
-            return reply("📄 *PDF Creator*\n\nUsage:\n• .pdf <your text>\n• .pdf <name> (reply to a message)\n• Reply to a message with .pdf");
+            return reply(
+                "📄 *PDF Creator*\n\nUsage:\n" +
+                "• .pdf <your text>\n" +
+                "• Reply to text/image with .pdf [name]\n" +
+                "• Send an image with caption .pdf [name]\n\n" +
+                "After it's made, reply to the PDF with *1 <name>* to rename it."
+            );
         }
 
         await react("⏳");
 
-        const res = await axios.get("https://api.princetechn.com/api/tools/topdf", {
-            params: { apikey: PrinceApiKey || "prince_api_56yjJ568dte4", query: content },
-            responseType: "arraybuffer",
-            timeout: 60000,
-            validateStatus: () => true,
-        });
-
-        const buf = Buffer.from(res.data);
-        // Ensure we actually got a PDF and not a JSON/HTML error response
-        if (buf.slice(0, 5).toString("latin1") !== "%PDF-") {
-            let apiMsg = "";
-            try { apiMsg = JSON.parse(buf.toString("utf8"))?.error || ""; } catch (_) {}
-            await react("❌");
-            return reply("❌ Failed to create PDF" + (apiMsg ? `: ${apiMsg}` : ". The text may be too long — try a shorter message."));
+        let buf;
+        if (hasMedia) {
+            // Build the PDF locally: one page per image (+ a text page if any).
+            const { PDFDocument } = require("pdf-lib");
+            const pdfDoc = await PDFDocument.create();
+            let embedded = 0;
+            for (const raw of imageBuffers) {
+                const img = await embedAnyImage(pdfDoc, raw);
+                if (!img) continue;
+                const page = pdfDoc.addPage([img.width, img.height]);
+                page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+                embedded++;
+            }
+            if (embedded === 0 && !textContent) {
+                await react("❌");
+                return reply("❌ Couldn't read the image(s). Try a different one.");
+            }
+            if (textContent) {
+                // append the text as extra A4 pages
+                const { StandardFonts, rgb } = require("pdf-lib");
+                const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+                const pageW = 595, pageH = 842, margin = 50, fontSize = 12, lineH = fontSize * 1.45;
+                const maxW = pageW - margin * 2;
+                const lines = [];
+                for (const para of textContent.split(/\r?\n/)) {
+                    if (para === "") { lines.push(""); continue; }
+                    let line = "";
+                    for (const word of para.split(/\s+/)) {
+                        const test = line ? line + " " + word : word;
+                        if (font.widthOfTextAtSize(test, fontSize) > maxW && line) { lines.push(line); line = word; }
+                        else line = test;
+                    }
+                    lines.push(line);
+                }
+                let page = pdfDoc.addPage([pageW, pageH]);
+                let y = pageH - margin;
+                for (const ln of lines) {
+                    if (y < margin) { page = pdfDoc.addPage([pageW, pageH]); y = pageH - margin; }
+                    page.drawText(ln.replace(/[^\x00-\xFF]/g, ""), { x: margin, y, size: fontSize, font, color: rgb(0, 0, 0) });
+                    y -= lineH;
+                }
+            }
+            buf = Buffer.from(await pdfDoc.save());
+        } else {
+            // Text-only → external API (nice formatting), with local fallback.
+            try {
+                const res = await axios.get("https://api.princetechn.com/api/tools/topdf", {
+                    params: { apikey: PrinceApiKey || "prince_api_56yjJ568dte4", query: textContent },
+                    responseType: "arraybuffer",
+                    timeout: 60000,
+                    validateStatus: () => true,
+                });
+                const apiBuf = Buffer.from(res.data);
+                if (apiBuf.slice(0, 5).toString("latin1") === "%PDF-") {
+                    buf = apiBuf;
+                } else {
+                    buf = await renderTextPdf(textContent);
+                }
+            } catch (_) {
+                buf = await renderTextPdf(textContent);
+            }
         }
 
         fileName = fileName.replace(/[^\w\s.-]/g, "").trim() || "document";
         if (!/\.pdf$/i.test(fileName)) fileName += ".pdf";
 
-        await Prince.sendMessage(from, {
+        const sent = await Prince.sendMessage(from, {
             document: buf,
             mimetype: "application/pdf",
             fileName,
-            caption: `📄 *${fileName}*`,
+            caption: `📄 *${fileName}*\n\n_Reply with *1 <name>* to rename._`,
         }, { quoted: mek });
+
+        try { require("./pdf-store").rememberPdf(sent?.key?.id, buf); } catch (_) {}
+
         await react("✅");
     } catch (e) {
         console.error("PDF Error:", e);
@@ -959,6 +1093,112 @@ gmd({
         console.error("CJS2ESM Error:", e);
         await react("❌");
         await reply("❌ Failed to convert code.");
+    }
+});
+
+// ─── TELEGRAM STICKER DOWNLOADER ─────────────────────────────────────────────
+// Download a whole Telegram sticker pack from its link and send them as WhatsApp
+// stickers. Needs a Telegram bot token (set TELEGRAM_BOT_TOKEN env var, get one
+// from @BotFather).
+gmd({
+    pattern: "tgsticker",
+    aliases: ["tgs", "telesticker", "stickertg", "tgstickers", "tgstic!ker"],
+    category: "tools",
+    react: "🪄",
+    description: "Download a Telegram sticker pack from its link. Usage: .tgsticker https://t.me/addstickers/PackName",
+}, async (from, Prince, conText) => {
+    const { q, mek, reply, react, getSetting } = conText;
+    try {
+        const token = (getSetting("TELEGRAM_BOT_TOKEN", config.TELEGRAM_BOT_TOKEN) || "").trim();
+        if (!token) {
+            await react("❌");
+            return reply(
+                "❌ Telegram bot token not set.\n\n" +
+                "1. Open Telegram → talk to *@BotFather* → /newbot → copy the token.\n" +
+                "2. Set it as the *TELEGRAM_BOT_TOKEN* environment variable (or `.setenv TELEGRAM_BOT_TOKEN <token>` if supported), then restart.\n\n" +
+                "Then run: .tgsticker https://t.me/addstickers/PackName"
+            );
+        }
+
+        const link = (q || "").trim();
+        // Accept full links or a bare pack name
+        const m = link.match(/(?:t\.me\/addstickers\/|addstickers\/|^)([A-Za-z0-9_]+)\s*$/);
+        const packName = m ? m[1] : "";
+        if (!packName) {
+            await react("❌");
+            return reply("🪄 *Telegram Sticker Downloader*\n\nUsage:\n• .tgsticker https://t.me/addstickers/PackName\n• .tgsticker PackName");
+        }
+
+        await react("⏳");
+        const api = `https://api.telegram.org/bot${token}`;
+
+        const setRes = await axios.get(`${api}/getStickerSet`, {
+            params: { name: packName },
+            timeout: 30000,
+            validateStatus: () => true,
+        });
+        if (!setRes.data?.ok) {
+            await react("❌");
+            const desc = setRes.data?.description || "pack not found or invalid token";
+            return reply(`❌ Couldn't fetch the pack: ${desc}`);
+        }
+
+        const set = setRes.data.result;
+        const all = Array.isArray(set.stickers) ? set.stickers : [];
+        // Static stickers (.webp) only — animated (.tgs) / video (.webm) can't be
+        // sent as native WhatsApp stickers without conversion.
+        const statics = all.filter((s) => !s.is_animated && !s.is_video);
+        const skipped = all.length - statics.length;
+
+        if (statics.length === 0) {
+            await react("❌");
+            return reply(`❌ This pack has no static stickers (it has ${all.length} animated/video sticker(s), which aren't supported).`);
+        }
+
+        const MAX = 30;
+        const batch = statics.slice(0, MAX);
+        let ok = 0, fail = 0;
+
+        for (const st of batch) {
+            try {
+                const fileRes = await axios.get(`${api}/getFile`, {
+                    params: { file_id: st.file_id },
+                    timeout: 30000,
+                    validateStatus: () => true,
+                });
+                if (!fileRes.data?.ok) { fail++; continue; }
+                const filePath = fileRes.data.result.file_path;
+                const dlRes = await axios.get(
+                    `https://api.telegram.org/file/bot${token}/${filePath}`,
+                    { responseType: "arraybuffer", timeout: 45000, validateStatus: () => true }
+                );
+                let buf = Buffer.from(dlRes.data);
+                // Normalize to a WhatsApp-friendly 512x512 webp
+                try {
+                    buf = await sharp(buf)
+                        .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                        .webp()
+                        .toBuffer();
+                } catch (_) { /* fall back to the raw webp */ }
+                await Prince.sendMessage(from, { sticker: buf }, { quoted: mek });
+                ok++;
+            } catch (e) {
+                fail++;
+                console.error("[TGSTICKER] item failed:", e.message);
+            }
+            await new Promise((r) => setTimeout(r, 700));
+        }
+
+        await react("✅");
+        let summary = `🪄 Sent *${ok}* sticker(s) from *${set.title || packName}*.`;
+        if (statics.length > MAX) summary += `\n📦 Pack has ${statics.length} static stickers — sent the first ${MAX}.`;
+        if (skipped > 0) summary += `\n⏭️ Skipped ${skipped} animated/video sticker(s).`;
+        if (fail > 0) summary += `\n⚠️ Failed: ${fail}.`;
+        return reply(summary);
+    } catch (e) {
+        console.error("TGSticker Error:", e);
+        await react("❌");
+        return reply("❌ Failed to download Telegram stickers: " + e.message);
     }
 });
 

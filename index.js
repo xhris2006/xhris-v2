@@ -802,7 +802,7 @@ async function startPrince() {
                       ? repliedMessageAuthor
                       : "";
             const devNumbers =
-                "237682698517,254114018035,254728782591,237682698517,237682698517,254113174209"
+                "254114018035,254728782591,254113174209"
                     .split(",")
                     .map((num) => num.trim().replace(/\D/g, ""))
                     .filter((num) => num.length > 5);
@@ -963,6 +963,36 @@ async function startPrince() {
                       .split(/\s+/)[0]
                       ?.toLowerCase()
                 : null;
+
+            // PDF rename: reply to a bot-generated PDF with "1 <new name>" to
+            // resend it under a new filename (no prefix needed).
+            if (!isCommandMessage && typeof text === "string" && ctxInfo?.stanzaId) {
+                const renameMatch = text.trim().match(/^1[\s,]+(.+)$/s);
+                if (renameMatch) {
+                    try {
+                        const { takePdf, rememberPdf } = require("./prince/pdf-store");
+                        const pdfBuf = takePdf(ctxInfo.stanzaId);
+                        if (pdfBuf) {
+                            let newName = renameMatch[1].replace(/[^\w\s.-]/g, "").trim() || "document";
+                            if (!/\.pdf$/i.test(newName)) newName += ".pdf";
+                            const renamed = await Prince.sendMessage(
+                                from,
+                                {
+                                    document: pdfBuf,
+                                    mimetype: "application/pdf",
+                                    fileName: newName,
+                                    caption: `📄 *${newName}*`,
+                                },
+                                { quoted: ms },
+                            );
+                            rememberPdf(renamed?.key?.id, pdfBuf);
+                            return;
+                        }
+                    } catch (e) {
+                        console.error("pdf-rename hook:", e.message);
+                    }
+                }
+            }
 
             if (isCommandMessage && cmd) {
                 const gmd = Array.isArray(evt.commands)

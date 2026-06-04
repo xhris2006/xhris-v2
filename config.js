@@ -48,7 +48,8 @@ module.exports = {
     NEWSLETTER_URL: process.env.NEWSLETTER_URL || 'https://whatsapp.com/channel/0029Vark1I1AYlUR1G8YMX31',
     BOT_REPO: process.env.BOT_REPO || 'xhris2006/xhris-v2',
     PACK_NAME: process.env.PACK_NAME || '𝐗𝐇𝐑𝐈𝐒 𝐌𝐃 𝐕𝟐',
-    PACK_AUTHOR: process.env.PACK_AUTHOR || '𝐗𝐇𝐑𝐈𝐒 𝐓𝐄𝐂𝐇'
+    PACK_AUTHOR: process.env.PACK_AUTHOR || '𝐗𝐇𝐑𝐈𝐒 𝐓𝐄𝐂𝐇',
+    TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || ''
 };
 
 let fileName = require.resolve(__filename);
