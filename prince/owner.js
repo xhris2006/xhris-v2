@@ -739,14 +739,28 @@ function getGcForwardList(getSetting) {
   return Array.isArray(list) ? list : [];
 }
 
-// Resolve which group to add/remove: an explicit @g.us in the text, else the
-// current group (when the command is used inside one).
-function resolveGcTarget(q, from, isGroup) {
-  const typed = (q || "").trim().replace(/\s+/g, "");
-  const m = typed.match(/[\w-]+@g\.us/);
-  if (m) return m[0];
-  if (isGroup) return from;
-  return null;
+// Resolve which group to add/remove. Priority: a WhatsApp invite link
+// (https://chat.whatsapp.com/CODE) → resolved to its group JID, else an explicit
+// @g.us in the text, else the current group. Returns { jid } or { error }.
+async function resolveGcTarget(q, from, isGroup, Prince) {
+  const typed = (q || "").trim();
+
+  const linkMatch = typed.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/i);
+  if (linkMatch) {
+    try {
+      const info = await Prince.groupGetInviteInfo(linkMatch[1]);
+      if (info?.id) return { jid: info.id };
+      return { error: "Couldn't read that group invite link." };
+    } catch (e) {
+      return { error: "Invalid or expired group link." + (e?.message ? ` (${e.message})` : "") };
+    }
+  }
+
+  const jidMatch = typed.replace(/\s+/g, "").match(/[\w-]+@g\.us/);
+  if (jidMatch) return { jid: jidMatch[0] };
+
+  if (isGroup) return { jid: from };
+  return { jid: null };
 }
 
 gmd({
@@ -754,15 +768,21 @@ gmd({
   aliases: ["addgc", "setgcforward", "gcforwardadd"],
   react: "📥",
   category: "owner",
-  description: "Add a group to the GC-forward list (use inside the group or pass its JID).",
+  description: "Add a group to the GC-forward list (paste its invite link, use inside the group, or pass its JID).",
 }, async (from, Prince, conText) => {
   const { reply, react, isSuperUser, isGroup, q, getSetting, setSetting } = conText;
   if (!isSuperUser) return reply("❌ Owner Only Command!");
 
-  const target = resolveGcTarget(q, from, isGroup);
+  await react("⏳");
+  const res = await resolveGcTarget(q, from, isGroup, Prince);
+  if (res.error) {
+    await react("❌");
+    return reply(`❌ ${res.error}`);
+  }
+  const target = res.jid;
   if (!target) {
     await react("❌");
-    return reply("❌ Use this *inside the group* you want to add, or pass the group JID.\n\n*Example:* .addgcforward 120363xxxxxx@g.us");
+    return reply("❌ Paste the *group invite link*, use this *inside the group*, or pass its JID.\n\n*Example:* .addgcforward https://chat.whatsapp.com/XXXXXXXXXXX");
   }
 
   const list = getGcForwardList(getSetting);
@@ -781,7 +801,7 @@ gmd({
   aliases: ["delgc", "removegcforward", "gcforwarddel"],
   react: "🗑️",
   category: "owner",
-  description: "Remove a group from the GC-forward list (or 'all' to clear).",
+  description: "Remove a group from the GC-forward list (invite link, inside the group, JID, or 'all').",
 }, async (from, Prince, conText) => {
   const { reply, react, isSuperUser, isGroup, q, getSetting, setSetting } = conText;
   if (!isSuperUser) return reply("❌ Owner Only Command!");
@@ -792,10 +812,16 @@ gmd({
     return reply("✅ GC-forward list cleared.");
   }
 
-  const target = resolveGcTarget(q, from, isGroup);
+  await react("⏳");
+  const res = await resolveGcTarget(q, from, isGroup, Prince);
+  if (res.error) {
+    await react("❌");
+    return reply(`❌ ${res.error}`);
+  }
+  const target = res.jid;
   if (!target) {
     await react("❌");
-    return reply("❌ Use this *inside the group* to remove, pass its JID, or use `.delgcforward all`.");
+    return reply("❌ Paste the *group invite link*, use this *inside the group*, pass its JID, or use `.delgcforward all`.");
   }
 
   const list = getGcForwardList(getSetting);

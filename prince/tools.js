@@ -857,51 +857,114 @@ gmd({
     }
 });
 
-// Render plain text into a multi-page PDF buffer (pdf-lib, word-wrapped A4).
-async function renderTextPdf(text) {
-    const { PDFDocument, StandardFonts, rgb } = require("pdf-lib");
-    const pdfDoc = await PDFDocument.create();
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const pageW = 595, pageH = 842, margin = 50, fontSize = 12, lineH = fontSize * 1.45;
-    const maxW = pageW - margin * 2;
+// ─── Dependency-free PDF builder (raw PDF; embeds JPEG images + Helvetica text)
+// `pages`: array of { type:"image", data:Buffer(jpeg), width, height }
+//                  | { type:"text", lines:[string] }   (already wrapped lines)
+function buildPdf(pages) {
+    const A4W = 595, A4H = 842, margin = 50, fontSize = 12, lineH = 16;
+    const escapeText = (s) =>
+        String(s)
+            .replace(/[^\x20-\x7E\xA0-\xFF]/g, "")   // drop chars WinAnsi can't show
+            .replace(/\\/g, "\\\\")
+            .replace(/\(/g, "\\(")
+            .replace(/\)/g, "\\)");
 
-    const lines = [];
+    let next = 4; // 1=Catalog, 2=Pages, 3=Font are reserved
+    const items = [];
+    const pageNums = [];
+
+    for (const pg of pages) {
+        if (pg.type === "image") {
+            const imgNum = next++, contentNum = next++, pageNum = next++;
+            pageNums.push(pageNum);
+            const content = Buffer.from(`q\n${pg.width} 0 0 ${pg.height} 0 0 cm\n/Im0 Do\nQ\n`, "latin1");
+            items.push({ num: imgNum, dict: `<< /Type /XObject /Subtype /Image /Width ${pg.width} /Height ${pg.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${pg.data.length} >>`, stream: pg.data });
+            items.push({ num: contentNum, dict: `<< /Length ${content.length} >>`, stream: content });
+            items.push({ num: pageNum, dict: `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pg.width} ${pg.height}] /Resources << /XObject << /Im0 ${imgNum} 0 R >> >> /Contents ${contentNum} 0 R >>`, stream: null });
+        } else {
+            const contentNum = next++, pageNum = next++;
+            pageNums.push(pageNum);
+            let txt = `BT\n/F1 ${fontSize} Tf\n${lineH} TL\n${margin} ${A4H - margin} Td\n`;
+            for (const ln of pg.lines) txt += `(${escapeText(ln)}) Tj T*\n`;
+            txt += "ET\n";
+            const content = Buffer.from(txt, "latin1");
+            items.push({ num: contentNum, dict: `<< /Length ${content.length} >>`, stream: content });
+            items.push({ num: pageNum, dict: `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${A4W} ${A4H}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentNum} 0 R >>`, stream: null });
+        }
+    }
+
+    const total = next - 1;
+    items.push({ num: 1, dict: `<< /Type /Catalog /Pages 2 0 R >>`, stream: null });
+    items.push({ num: 2, dict: `<< /Type /Pages /Count ${pageNums.length} /Kids [${pageNums.map((n) => n + " 0 R").join(" ")}] >>`, stream: null });
+    items.push({ num: 3, dict: `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`, stream: null });
+    items.sort((a, b) => a.num - b.num);
+
+    const header = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a]);
+    const chunks = [header];
+    let pos = header.length;
+    const offsets = new Array(total + 1).fill(0);
+
+    for (const it of items) {
+        offsets[it.num] = pos;
+        const head = Buffer.from(`${it.num} 0 obj\n${it.dict}\n`, "latin1");
+        chunks.push(head); pos += head.length;
+        if (it.stream) {
+            const s1 = Buffer.from("stream\n", "latin1");
+            const s2 = Buffer.from("\nendstream\n", "latin1");
+            chunks.push(s1, it.stream, s2);
+            pos += s1.length + it.stream.length + s2.length;
+        }
+        const tail = Buffer.from("endobj\n", "latin1");
+        chunks.push(tail); pos += tail.length;
+    }
+
+    const xrefStart = pos;
+    let xref = `xref\n0 ${total + 1}\n0000000000 65535 f \n`;
+    for (let n = 1; n <= total; n++) xref += String(offsets[n]).padStart(10, "0") + " 00000 n \n";
+    const trailer = `trailer\n<< /Size ${total + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+    chunks.push(Buffer.from(xref + trailer, "latin1"));
+    return Buffer.concat(chunks);
+}
+
+// Wrap text into lines, paginated into A4 text pages (estimated Helvetica width).
+function textToPdfPages(text) {
+    const fontSize = 12, lineH = 16, margin = 50, A4W = 595, A4H = 842;
+    const maxChars = Math.floor((A4W - margin * 2) / (fontSize * 0.5)); // ~82
+    const maxLines = Math.floor((A4H - margin * 2) / lineH);            // ~46
+
+    const wrapped = [];
     for (const para of String(text).split(/\r?\n/)) {
-        if (para === "") { lines.push(""); continue; }
+        if (para.trim() === "") { wrapped.push(""); continue; }
         let line = "";
         for (const word of para.split(/\s+/)) {
             const test = line ? line + " " + word : word;
-            if (font.widthOfTextAtSize(test, fontSize) > maxW && line) {
-                lines.push(line);
-                line = word;
-            } else {
-                line = test;
-            }
+            if (test.length > maxChars && line) { wrapped.push(line); line = word; }
+            else line = test;
         }
-        lines.push(line);
+        if (line) wrapped.push(line);
     }
 
-    let page = pdfDoc.addPage([pageW, pageH]);
-    let y = pageH - margin;
-    for (const ln of lines) {
-        if (y < margin) { page = pdfDoc.addPage([pageW, pageH]); y = pageH - margin; }
-        // strip characters Helvetica can't encode (e.g. emoji) to avoid throwing
-        const safe = ln.replace(/[^\x00-\xFF]/g, "");
-        page.drawText(safe, { x: margin, y, size: fontSize, font, color: rgb(0, 0, 0) });
-        y -= lineH;
+    const pages = [];
+    for (let i = 0; i < wrapped.length; i += maxLines) {
+        pages.push({ type: "text", lines: wrapped.slice(i, i + maxLines) });
     }
-    return Buffer.from(await pdfDoc.save());
+    if (pages.length === 0) pages.push({ type: "text", lines: [""] });
+    return pages;
 }
 
-// Embed an image buffer into a pdf-lib doc, trying JPEG/PNG directly then sharp.
-async function embedAnyImage(pdfDoc, raw) {
-    try { return await pdfDoc.embedJpg(raw); } catch (_) {}
-    try { return await pdfDoc.embedPng(raw); } catch (_) {}
+// Convert any image buffer to a JPEG page (RGB) with its pixel dimensions.
+async function imageToJpegPage(raw) {
     try {
-        const jpg = await sharp(raw).flatten({ background: "#ffffff" }).jpeg({ quality: 90 }).toBuffer();
-        return await pdfDoc.embedJpg(jpg);
+        const out = await sharp(raw)
+            .rotate()                                   // honor EXIF orientation
+            .flatten({ background: "#ffffff" })         // drop alpha → white bg
+            .resize(1600, 1600, { fit: "inside", withoutEnlargement: true })
+            .toColourspace("srgb")
+            .jpeg({ quality: 85 })
+            .toBuffer({ resolveWithObject: true });
+        return { type: "image", data: out.data, width: out.info.width, height: out.info.height };
     } catch (e) {
-        console.error("[PDF] embed image failed:", e.message);
+        console.error("[PDF] image convert failed:", e.message);
         return null;
     }
 }
@@ -980,47 +1043,18 @@ gmd({
 
         let buf;
         if (hasMedia) {
-            // Build the PDF locally: one page per image (+ a text page if any).
-            const { PDFDocument } = require("pdf-lib");
-            const pdfDoc = await PDFDocument.create();
-            let embedded = 0;
+            // Build the PDF locally (no external deps): a page per image + text pages.
+            const pages = [];
             for (const raw of imageBuffers) {
-                const img = await embedAnyImage(pdfDoc, raw);
-                if (!img) continue;
-                const page = pdfDoc.addPage([img.width, img.height]);
-                page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
-                embedded++;
+                const pg = await imageToJpegPage(raw);
+                if (pg) pages.push(pg);
             }
-            if (embedded === 0 && !textContent) {
+            if (pages.length === 0 && !textContent) {
                 await react("❌");
                 return reply("❌ Couldn't read the image(s). Try a different one.");
             }
-            if (textContent) {
-                // append the text as extra A4 pages
-                const { StandardFonts, rgb } = require("pdf-lib");
-                const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-                const pageW = 595, pageH = 842, margin = 50, fontSize = 12, lineH = fontSize * 1.45;
-                const maxW = pageW - margin * 2;
-                const lines = [];
-                for (const para of textContent.split(/\r?\n/)) {
-                    if (para === "") { lines.push(""); continue; }
-                    let line = "";
-                    for (const word of para.split(/\s+/)) {
-                        const test = line ? line + " " + word : word;
-                        if (font.widthOfTextAtSize(test, fontSize) > maxW && line) { lines.push(line); line = word; }
-                        else line = test;
-                    }
-                    lines.push(line);
-                }
-                let page = pdfDoc.addPage([pageW, pageH]);
-                let y = pageH - margin;
-                for (const ln of lines) {
-                    if (y < margin) { page = pdfDoc.addPage([pageW, pageH]); y = pageH - margin; }
-                    page.drawText(ln.replace(/[^\x00-\xFF]/g, ""), { x: margin, y, size: fontSize, font, color: rgb(0, 0, 0) });
-                    y -= lineH;
-                }
-            }
-            buf = Buffer.from(await pdfDoc.save());
+            if (textContent) pages.push(...textToPdfPages(textContent));
+            buf = buildPdf(pages);
         } else {
             // Text-only → external API (nice formatting), with local fallback.
             try {
@@ -1031,13 +1065,11 @@ gmd({
                     validateStatus: () => true,
                 });
                 const apiBuf = Buffer.from(res.data);
-                if (apiBuf.slice(0, 5).toString("latin1") === "%PDF-") {
-                    buf = apiBuf;
-                } else {
-                    buf = await renderTextPdf(textContent);
-                }
+                buf = apiBuf.slice(0, 5).toString("latin1") === "%PDF-"
+                    ? apiBuf
+                    : buildPdf(textToPdfPages(textContent));
             } catch (_) {
-                buf = await renderTextPdf(textContent);
+                buf = buildPdf(textToPdfPages(textContent));
             }
         }
 
