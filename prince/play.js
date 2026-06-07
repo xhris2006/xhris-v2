@@ -248,7 +248,7 @@ gmd({
     description: "Download Video from Youtube"
   },
   async (from, Prince, conText) => {
-    const { q, mek, reply, react, sender, botPic, botName, botFooter, newsletterUrl, newsletterJid, gmdJson, gmdBuffer, formatVideo, PrinceTechApi, PrinceApiKey } = conText;
+    const { q, mek, reply, react, sender, botPic, botName, gmdBuffer, formatVideo, newsletterJid } = conText;
 
     if (!q) {
       await react("❌");
@@ -256,79 +256,45 @@ gmd({
     }
 
     try {
-      const searchResponse = await gmdJson(`https://yts.giftedtech.co.ke/?q=${encodeURIComponent(q)}`);
-      
-      if (!searchResponse || !Array.isArray(searchResponse.videos)) {
-        await react("❌");
-        return reply("Invalid response from search API. Please try again.");
-      }
+      await react("🔍");
+      const { ytSearch, ytGetVideoUrl } = require('../mayel/ytHelper');
 
-      if (searchResponse.videos.length === 0) {
+      // If a YouTube URL is given, use it directly (and try to enrich metadata);
+      // otherwise treat the query as a search term.
+      const isUrl = /(?:youtube\.com|youtu\.be)\//i.test(q);
+      let video = await ytSearch(q);
+      if (!video && isUrl) video = { url: q.trim(), title: "YouTube Video", duration: "" };
+
+      if (!video || !video.url) {
         await react("❌");
         return reply("No results found for your search.");
       }
-      
-      const firstVideo = searchResponse.videos[0];
-      const videoUrl = firstVideo.url;
-      
-      const { tryMultipleEndpoints } = require('../mayel/apiFallback');
-      const apiResult = await tryMultipleEndpoints(
-        ['download/ytmp4', 'download/mp4', 'download/ytv', 'download/dlmp4', 'download/ytvideo', 'download/ytvid'],
-        { url: videoUrl }
-      );
-      let downloadUrl = null;
 
-      if (apiResult.success && apiResult.data) {
-        downloadUrl = apiResult.data.result?.download_url
-                   || apiResult.data.result?.url
-                   || apiResult.data.result?.video
-                   || apiResult.data.result?.media
-                   || apiResult.data.download_url
-                   || apiResult.data.url
-                   || apiResult.data.video
-                   || apiResult.data.media
-                   || apiResult.data.dl_url
-                   || apiResult.data.downloadUrl
-                   || apiResult.data.data?.url
-                   || apiResult.data.data?.download_url;
-        if (downloadUrl) {
-          console.log(`[YTMP4] ✅ Source: ${apiResult.providerName}`);
-        }
-      }
-      // Essai 2 : fallback dreaded.site si tout échoue
-      if (!downloadUrl) {
-        try {
-          const fallbackRes = await gmdJson(`https://api.dreaded.site/api/youtube/mp4?url=${encodeURIComponent(videoUrl)}`);
-          downloadUrl = fallbackRes?.result?.download?.url
-                     || fallbackRes?.result?.url
-                     || fallbackRes?.url;
-          if (downloadUrl) console.log(`[YTMP4] ✅ Fallback dreaded.site OK`);
-        } catch (e) { console.log('[YTMP4] dreaded fallback failed:', e.message); }
-      }
-
+      const downloadUrl = await ytGetVideoUrl(video.url);
       if (!downloadUrl) {
         await react("❌");
-        return reply("Failed to get download URL for the video.");
+        return reply("Failed to get a download link for the video. Please try again in a few minutes.");
       }
 
       const buffer = await gmdBuffer(downloadUrl);
-      const convertedBuffer = await formatVideo(buffer);
-      if (buffer instanceof Error) {
+      if (!buffer || buffer instanceof Error) {
         await react("❌");
         return reply("Failed to download the video file.");
       }
+      const convertedBuffer = await formatVideo(buffer);
 
+      const safeName = `${video.title}.mp4`.replace(/[^\w\s.-]/gi, '').trim() || "video.mp4";
       const infoMess = {
         image: { url: botPic },
-        caption: `> *${botName} 𝐕𝐈𝐃𝐄𝐎 𝐃𝐎𝐖𝐍𝐋𝐎𝐀𝐃𝐄𝐑*  
-╭───────────────◆  
-│⿻ *Title:* ${firstVideo.name}
-│⿻ *Duration:* ${firstVideo.duration}
-╰────────────────◆  
+        caption: `> *${botName} 𝐕𝐈𝐃𝐄𝐎 𝐃𝐎𝐖𝐍𝐋𝐎𝐀𝐃𝐄𝐑*
+╭───────────────◆
+│⿻ *Title:* ${video.title}
+│⿻ *Duration:* ${video.duration || "N/A"}
+╰────────────────◆
 ⏱ *Session expires in 2 minutes*
 ╭───────────────◆
 │Reply With:
-│1️⃣ To Download Video 🎥 
+│1️⃣ To Download Video 🎥
 │2️⃣ To Download as Document 📄
 ╰────────────────◆`,
         contextInfo: getContextInfo(sender, newsletterJid, botName)
@@ -336,41 +302,41 @@ gmd({
 
       const messageSent = await Prince.sendMessage(from, infoMess, { quoted: mek });
       const messageId = messageSent.key.id;
-      
+
       const handleResponse = async (event) => {
         const messageData = event.messages[0];
-        if (!messageData.message) return;
+        if (!messageData?.message) return;
         const isReplyToDownloadPrompt = messageData.message.extendedTextMessage?.contextInfo?.stanzaId === messageId;
         if (!isReplyToDownloadPrompt) return;
-        const messageContent = messageData.message.conversation || messageData.message.extendedTextMessage?.text;
+        const messageContent = (messageData.message.conversation || messageData.message.extendedTextMessage?.text || "").trim();
         await react("⬇️");
-        
+
         try {
-          switch (messageContent.trim()) {
+          switch (messageContent) {
             case "1":
               await Prince.sendMessage(from, {
                 video: convertedBuffer,
                 mimetype: "video/mp4",
-                pvt: true,
-                fileName: `${firstVideo.name}.mp4`.replace(/[^\w\s.-]/gi, ''),
-                caption: `🎥 ${firstVideo.name}`,
+                fileName: safeName,
+                caption: `🎥 ${video.title}`,
               }, { quoted: messageData });
               break;
-              
+
             case "2":
               await Prince.sendMessage(from, {
                 document: convertedBuffer,
                 mimetype: "video/mp4",
-                fileName: `${firstVideo.name}.mp4`.replace(/[^\w\s.-]/gi, ''),
-                caption: `📄 ${firstVideo.name}`,
+                fileName: safeName,
+                caption: `📄 ${video.title}`,
               }, { quoted: messageData });
               break;
-              
+
             default:
               await reply("Invalid option selected. Please reply with:\n1️⃣ For Video\n2️⃣ For Document", messageData);
               return;
           }
           await react("✅");
+          Prince.ev.off("messages.upsert", handleResponse);
         } catch (error) {
           console.error("Error sending media:", error);
           await react("❌");
@@ -378,17 +344,9 @@ gmd({
         }
       };
 
-      let sessionExpired = false;
-      
-      const timeoutHandler = () => {
-        sessionExpired = true;
-        Prince.ev.off("messages.upsert", handleResponse);
-      };
-
-      setTimeout(timeoutHandler, 120000);
-      
       Prince.ev.on("messages.upsert", handleResponse);
-      
+      setTimeout(() => Prince.ev.off("messages.upsert", handleResponse), 120000);
+
     } catch (error) {
       console.error("Error during download process:", error);
       await react("❌");

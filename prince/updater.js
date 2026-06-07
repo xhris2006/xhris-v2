@@ -66,12 +66,19 @@ gmd(
       const repoName = process.env.BOT_REPO || config.BOT_REPO || "xhris2006/xhris-v2";
       const branch = process.env.BOT_BRANCH || "main";
 
+      // Auth headers — the repo is private, so the token (injected by the host
+      // platform via process.env.GITHUB_TOKEN) is required for the API + zip.
+      const githubToken = process.env.GITHUB_TOKEN || "";
+      const authHeaders = githubToken
+        ? { 'User-Agent': 'XHRIS-MD-V2', 'Authorization': `token ${githubToken}` }
+        : { 'User-Agent': 'XHRIS-MD-V2' };
+
       await react("🔍");
 
       // Fetch the latest commit
       const { data: commitData } = await axios.get(
         `https://api.github.com/repos/${repoName}/commits/${branch}`,
-        { headers: { 'User-Agent': 'XHRIS-MD-V2' } }
+        { headers: authHeaders }
       );
 
       const latestCommitHash = commitData.sha;
@@ -105,12 +112,12 @@ gmd(
       const repoShort = repoName.split("/")[1];
       const zipPath = path.join(__dirname, "..", `${repoShort}.zip`);
 
-      // Télécharger le ZIP
+      // Télécharger le ZIP via l'endpoint authentifié zipball (repo privé)
       const { data: zipData } = await axios.get(
-        `https://github.com/${repoName}/archive/${branch}.zip`,
+        `https://api.github.com/repos/${repoName}/zipball/${branch}`,
         {
           responseType: "arraybuffer",
-          headers: { 'User-Agent': 'XHRIS-MD-V2' },
+          headers: authHeaders,
           timeout: 120000
         }
       );
@@ -122,7 +129,15 @@ gmd(
       const zip = new AdmZip(zipPath);
       zip.extractAllTo(extractPath, true);
 
-      const sourcePath = path.join(extractPath, `${repoShort}-${branch}`);
+      // Détecter le dossier extrait (zipball le nomme owner-repo-hash, imprévisible)
+      const extractedDirs = fs.readdirSync(extractPath).filter((name) => {
+        try { return fs.statSync(path.join(extractPath, name)).isDirectory(); }
+        catch { return false; }
+      });
+      if (extractedDirs.length === 0) {
+        throw new Error("Dossier extrait introuvable dans l'archive");
+      }
+      const sourcePath = path.join(extractPath, extractedDirs[0]);
       const destinationPath = path.join(__dirname, "..");
 
       // Fichiers/dossiers à NE PAS écraser
@@ -165,8 +180,9 @@ gmd(
       await react("❌");
 
       let errorMsg = "❌ *Update failed*\n\n";
-      if (error.response?.status === 404) {
-        errorMsg += `The repo ${process.env.BOT_REPO || config.BOT_REPO || "xhris2006/xhris-v2"} could not be found. Make sure it is public.`;
+      if (error.response?.status === 404 || error.response?.status === 401) {
+        errorMsg += `The repo ${process.env.BOT_REPO || config.BOT_REPO || "xhris2006/xhris-v2"} could not be accessed (private repo). ` +
+          `Make sure GITHUB_TOKEN is set in the container — redeploy the bot if it was added after the bot started.`;
       } else if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
         errorMsg += "Download timed out. Please try again in a few minutes.";
       } else {

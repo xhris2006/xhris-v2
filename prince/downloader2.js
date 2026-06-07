@@ -540,17 +540,19 @@ gmd(
     }
 
     try {
-      const searchResponse = await gmdJson(`${PrinceTechApi}/search/yts?apikey=${PrinceApiKey}&query=${encodeURIComponent(q)}`);
-      const videoInfo = searchResponse.results[0];
+      const { ytSearch, ytGetVideoUrl } = require("../mayel/ytHelper");
+      // Metadata is best-effort — don't fail the command if search returns nothing.
+      let videoInfo = await ytSearch(q);
+      if (!videoInfo) videoInfo = { title: "YouTube Video", duration: "", views: "", ago: "", author: "" };
 
       const infoMessage = {
         image: { url: botPic },
         caption: `> *${botName} VIDEO DOWNLOADER*\n\n` +
           `*Title:* ${videoInfo.title}\n` +
-          `*Duration:* ${videoInfo.timestamp}\n` +
-          `*Views:* ${videoInfo.views}\n` +
-          `*Uploaded:* ${videoInfo.ago}\n` +
-          `*Artist:* ${videoInfo.author.name}\n\n` +
+          `*Duration:* ${videoInfo.duration || "N/A"}\n` +
+          `*Views:* ${videoInfo.views || "N/A"}\n` +
+          `*Uploaded:* ${videoInfo.ago || "N/A"}\n` +
+          `*Artist:* ${videoInfo.author || "N/A"}\n\n` +
           `⏱ *Session expires in 2 minutes*\n` +
           `╭───────────────◆\n` +
           `│Reply With:\n` +
@@ -589,32 +591,8 @@ gmd(
               return reply("Invalid option. Please reply with: 1, 2 or 3", messageData);
           }
 
-          // Download via public APIs in cascade (replaces the removed obfuscated package)
-          let downloadUrl = null;
-          const ytmp4Endpoints = [
-            `https://api.princetechn.com/api/download/ytmp4?apikey=prince_api_56yjJ568dte4&url=${encodeURIComponent(q)}&quality=${quality}`,
-            `https://api.giftedtech.web.id/api/download/ytmp4?apikey=gifted&url=${encodeURIComponent(q)}`,
-            `https://api.davidcyriltech.my.id/download/ytmp4?url=${encodeURIComponent(q)}`,
-            `https://api.dreaded.site/api/ytdl/video?url=${encodeURIComponent(q)}`,
-          ];
-
-          for (const endpoint of ytmp4Endpoints) {
-            try {
-              const res = await axios.get(endpoint, { timeout: 45000 });
-              const d = res.data;
-              downloadUrl =
-                d?.result?.download_url ||
-                d?.result?.url ||
-                d?.result?.video ||
-                d?.download_url ||
-                d?.url ||
-                d?.video ||
-                d?.result?.downloadUrl ||
-                d?.data?.url ||
-                d?.data?.download_url;
-              if (downloadUrl) break;
-            } catch (e) { continue; }
-          }
+          // Resolve a download link through the shared resilient helper.
+          const downloadUrl = await ytGetVideoUrl(q, quality);
 
           if (!downloadUrl) {
             await react("❌");
