@@ -3,7 +3,7 @@ const path = require("path");
 
 // Image hébergée sur GitHub raw — fonctionne partout sans env var
 const defaultBotPic = process.env.BOT_PIC
-  || 'https://raw.githubusercontent.com/xhris2006/xhris-v2/main/assets/xhris-md-v2.jpg';
+  || 'https://api.xhrishost.site/uploads/xhris-md-v2.jpg';
 
 module.exports = {
     SESSION_ID: process.env.SESSION_ID || '',
